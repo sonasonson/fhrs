@@ -101,87 +101,85 @@ class AhuakTVDownloader:
             print(f"⚠ Error checking Chrome: {e}")
     
     def setup_chrome_driver(self):
-        """Configure Chrome driver with undetected-chromedriver"""
-        print("Setting up Chrome browser (undetected mode)...")
+    """Configure Chrome driver with undetected-chromedriver"""
+    print("Setting up Chrome browser (undetected mode)...")
+    
+    try:
+        # استخدم الإعدادات الأساسية فقط
+        options = uc.ChromeOptions()
         
-        try:
-            # Options for Chrome
-            options = uc.ChromeOptions()
-            
-            # Add arguments to make Chrome more human-like
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--disable-web-security")
-            options.add_argument("--allow-running-insecure-content")
-            options.add_argument("--disable-notifications")
-            options.add_argument("--disable-popup-blocking")
-            options.add_argument(f"--user-data-dir={os.path.expanduser('~')}/.config/chrome-ahuak")
-            
-            # Disable automation flags
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            
-            # Random user agent
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ]
-            
-            # Set random user agent
-            options.add_argument(f"user-agent={random.choice(user_agents)}")
-            
-            # Preferences for downloads
-            prefs = {
-                "download.default_directory": str(self.download_dir.absolute()),
-                "download.prompt_for_download": False,
-                "download.directory_upgrade": True,
-                "plugins.always_open_pdf_externally": True,
-                "safebrowsing.enabled": True,
-                "credentials_enable_service": False,
-                "profile.password_manager_enabled": False
-            }
-            options.add_experimental_option("prefs", prefs)
-            
-            # Initialize undetected Chrome driver
-            print("Initializing undetected Chrome driver...")
-            self.driver = uc.Chrome(
-                options=options,
-                version_main=120,  # Chrome version
-                suppress_welcome=True,
-                use_subprocess=True
-            )
-            
-            # Execute CDP commands to hide automation
-            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": """
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                """
-            })
-            
-            # Another script to hide automation
-            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": """
-                    window.chrome = window.chrome || {};
-                    window.chrome.runtime = {};
-                """
-            })
-            
-            self.driver.maximize_window()
-            print("✓ Chrome driver initialized successfully in undetected mode")
-            
-            # Add some random delays and movements to appear more human
-            self.simulate_human_behavior()
-            
-        except Exception as e:
-            print(f"✗ Failed to initialize Chrome driver: {e}")
-            print("\nTrying alternative method with regular Chrome driver...")
-            self.setup_regular_chrome_driver()
+        # أضف الوسائط الأساسية فقط
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        
+        # إعدادات التحميل
+        prefs = {
+            "download.default_directory": str(self.download_dir.absolute()),
+            "download.prompt_for_download": False,
+        }
+        options.add_experimental_option("prefs", prefs)
+        
+        # استخدم إصدار Chrome المثبت على النظام (دعه يكتشفه تلقائيًا)
+        print("Initializing undetected Chrome driver...")
+        self.driver = uc.Chrome(
+            options=options,
+            suppress_welcome=True,
+            use_subprocess=True
+        )
+        
+        # إخفاء الأتمتة
+        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """
+        })
+        
+        print("✓ Chrome driver initialized successfully")
+        return True
+        
+    except Exception as e:
+        print(f"✗ Failed with undetected-chromedriver: {e}")
+        print("\nTrying with regular Chrome driver via webdriver-manager...")
+        return self.setup_regular_chrome_driver_fixed()
+
+def setup_regular_chrome_driver_fixed(self):
+    """Fallback using webdriver-manager"""
+    try:
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        
+        options = Options()
+        
+        # حل مشكلة DevToolsActivePort
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--remote-debugging-port=9222")
+        
+        # إعدادات مهمة لمنع التحطم
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+        
+        # استخدام webdriver-manager لتحديد ChromeDriver تلقائيًا
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=options)
+        
+        print("✓ Regular Chrome driver initialized via webdriver-manager")
+        return True
+        
+    except Exception as e:
+        print(f"✗ All Chrome driver methods failed: {e}")
+        print("\n" + "="*60)
+        print("FINAL RESOLUTION STEPS:")
+        print("="*60)
+        print("1. Install Chrome manually from https://www.google.com/chrome/")
+        print("2. Add Chrome to your PATH")
+        print("3. Run: pip install --force-reinstall undetected-chromedriver==3.5.4")
+        print("4. OR: Use the FlareSolverr method mentioned previously")
+        return False
     
     def setup_regular_chrome_driver(self):
         """Fallback to regular Chrome driver if undetected fails"""
@@ -978,3 +976,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
