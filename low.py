@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Ahuak.tv Video Downloader Script
-Automates downloading video episodes from Ahuak.tv with Firefox browser
+Ahuak.tv Video Downloader Script with Cloudflare Bypass
+Uses undetected-chromedriver to avoid Cloudflare detection
 """
 
 import os
@@ -10,15 +10,14 @@ import time
 import json
 import shutil
 import subprocess
-import tempfile
+import random
 from pathlib import Path
 from urllib.parse import urlparse
+import undetected_chromedriver as uc
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import (
     TimeoutException,
@@ -46,10 +45,12 @@ class AhuakTVDownloader:
     def check_and_install_dependencies(self):
         """Check and install required packages"""
         required_packages = [
+            'undetected-chromedriver',
             'selenium',
             'yt-dlp',
             'beautifulsoup4',
-            'requests'
+            'requests',
+            'webdriver-manager'
         ]
         
         print("Checking dependencies...")
@@ -61,67 +62,196 @@ class AhuakTVDownloader:
                 print(f"Installing {package}...")
                 subprocess.check_call([sys.executable, "-m", "pip", "install", package])
         
-        # Check for geckodriver
-        self.check_geckodriver()
+        # Check for Chrome
+        self.check_chrome_installation()
     
-    def check_geckodriver(self):
-        """Check if geckodriver is available"""
+    def check_chrome_installation(self):
+        """Check if Chrome is installed"""
         try:
-            # Try to find geckodriver in PATH
-            geckodriver_path = shutil.which('geckodriver')
-            if not geckodriver_path:
-                print("Geckodriver not found in PATH. Please install it:")
-                print("Ubuntu/Debian: sudo apt-get install firefox-geckodriver")
-                print("macOS: brew install geckodriver")
-                print("Or download from: https://github.com/mozilla/geckodriver/releases")
-                print("After installation, add it to your PATH")
-                exit(1)
-            print(f"✓ Geckodriver found at: {geckodriver_path}")
+            # Try to find Chrome in common locations
+            chrome_paths = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+            ]
+            
+            chrome_found = False
+            for path in chrome_paths:
+                if os.path.exists(path):
+                    chrome_found = True
+                    print(f"✓ Chrome/Chromium found at: {path}")
+                    break
+            
+            if not chrome_found:
+                # Try using which/where
+                if shutil.which("google-chrome"):
+                    print("✓ Chrome found via PATH")
+                elif shutil.which("chromium"):
+                    print("✓ Chromium found via PATH")
+                else:
+                    print("⚠ Chrome/Chromium not found. Please install Chrome:")
+                    print("  Ubuntu/Debian: sudo apt install google-chrome-stable")
+                    print("  Fedora: sudo dnf install google-chrome-stable")
+                    print("  macOS: brew install --cask google-chrome")
+                    print("  Or download from: https://www.google.com/chrome/")
         except Exception as e:
-            print(f"Error checking geckodriver: {e}")
-            exit(1)
+            print(f"⚠ Error checking Chrome: {e}")
     
-    def setup_firefox_driver(self):
-        """Configure Firefox driver with appropriate options"""
-        print("Setting up Firefox browser...")
-        
-        firefox_options = Options()
-        
-        # Set preferences for better automation
-        firefox_options.set_preference("browser.download.folderList", 2)
-        firefox_options.set_preference("browser.download.dir", str(self.download_dir.absolute()))
-        firefox_options.set_preference("browser.download.useDownloadDir", True)
-        firefox_options.set_preference("browser.download.viewableInternally.enabledTypes", "")
-        firefox_options.set_preference("browser.download.manager.showWhenStarting", False)
-        firefox_options.set_preference("browser.download.manager.useWindow", False)
-        firefox_options.set_preference("browser.download.manager.focusWhenStarting", False)
-        firefox_options.set_preference("browser.helperApps.neverAsk.saveToDisk", 
-                                      "video/mp4,video/webm,application/octet-stream")
-        
-        # Disable notifications and popups
-        firefox_options.set_preference("dom.webnotifications.enabled", False)
-        firefox_options.set_preference("dom.popup_maximum", 0)
-        
-        # Enable headless mode (optional - disable for debugging)
-        # firefox_options.add_argument("--headless")
+    def setup_chrome_driver(self):
+        """Configure Chrome driver with undetected-chromedriver"""
+        print("Setting up Chrome browser (undetected mode)...")
         
         try:
-            service = Service()
-            self.driver = webdriver.Firefox(service=service, options=firefox_options)
+            # Options for Chrome
+            options = uc.ChromeOptions()
+            
+            # Add arguments to make Chrome more human-like
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-web-security")
+            options.add_argument("--allow-running-insecure-content")
+            options.add_argument("--disable-notifications")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument(f"--user-data-dir={os.path.expanduser('~')}/.config/chrome-ahuak")
+            
+            # Disable automation flags
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            
+            # Random user agent
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ]
+            
+            # Set random user agent
+            options.add_argument(f"user-agent={random.choice(user_agents)}")
+            
+            # Preferences for downloads
+            prefs = {
+                "download.default_directory": str(self.download_dir.absolute()),
+                "download.prompt_for_download": False,
+                "download.directory_upgrade": True,
+                "plugins.always_open_pdf_externally": True,
+                "safebrowsing.enabled": True,
+                "credentials_enable_service": False,
+                "profile.password_manager_enabled": False
+            }
+            options.add_experimental_option("prefs", prefs)
+            
+            # Initialize undetected Chrome driver
+            print("Initializing undetected Chrome driver...")
+            self.driver = uc.Chrome(
+                options=options,
+                version_main=120,  # Chrome version
+                suppress_welcome=True,
+                use_subprocess=True
+            )
+            
+            # Execute CDP commands to hide automation
+            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                """
+            })
+            
+            # Another script to hide automation
+            self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
+                    window.chrome = window.chrome || {};
+                    window.chrome.runtime = {};
+                """
+            })
+            
             self.driver.maximize_window()
-            print("✓ Firefox driver initialized successfully")
+            print("✓ Chrome driver initialized successfully in undetected mode")
+            
+            # Add some random delays and movements to appear more human
+            self.simulate_human_behavior()
+            
         except Exception as e:
-            print(f"✗ Failed to initialize Firefox driver: {e}")
-            print("\nPlease ensure:")
-            print("1. Firefox is installed")
-            print("2. Geckodriver is in PATH")
-            print("3. No other Firefox instances are running")
+            print(f"✗ Failed to initialize Chrome driver: {e}")
+            print("\nTrying alternative method with regular Chrome driver...")
+            self.setup_regular_chrome_driver()
+    
+    def setup_regular_chrome_driver(self):
+        """Fallback to regular Chrome driver if undetected fails"""
+        try:
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.chrome.service import Service
+            from webdriver_manager.chrome import ChromeDriverManager
+            
+            options = Options()
+            
+            # Add stealth arguments
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
+            
+            # Add user agent
+            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            
+            # Download preferences
+            prefs = {
+                "download.default_directory": str(self.download_dir.absolute()),
+                "download.prompt_for_download": False,
+            }
+            options.add_experimental_option("prefs", prefs)
+            
+            # Use webdriver-manager to get the correct ChromeDriver
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
+            
+            # Hide automation
+            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
+            print("✓ Regular Chrome driver initialized")
+            
+        except Exception as e:
+            print(f"✗ Failed to initialize regular Chrome driver: {e}")
+            print("\nPlease install Chrome and ChromeDriver manually.")
+            print("Or try installing undetected-chromedriver with:")
+            print("  pip install undetected-chromedriver==3.5.4")
             exit(1)
+    
+    def simulate_human_behavior(self):
+        """Simulate human-like behavior to avoid detection"""
+        try:
+            # Random mouse movements
+            action = ActionChains(self.driver)
+            
+            # Move to random positions
+            for _ in range(3):
+                x = random.randint(0, 800)
+                y = random.randint(0, 600)
+                action.move_by_offset(x, y).perform()
+                time.sleep(0.5)
+            
+            # Random scrolling
+            scroll_amount = random.randint(200, 800)
+            self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+            time.sleep(1)
+            
+            # Scroll back
+            self.driver.execute_script(f"window.scrollBy(0, -{scroll_amount//2});")
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"Note: Could not simulate human behavior: {e}")
     
     def get_user_input(self):
         """Get series URL and episode count from user"""
         print("\n" + "="*50)
-        print("AHUAK.TV DOWNLOADER")
+        print("AHUAK.TV DOWNLOADER (CLOUDFLARE BYPASS)")
         print("="*50)
         
         series_url = input("\nEnter the series URL (e.g., https://ahuak.tv/series/...): ").strip()
@@ -140,23 +270,86 @@ class AhuakTVDownloader:
         
         return series_url, episode_count
     
-    def wait_for_cloudflare(self):
-        """Wait for user to manually bypass Cloudflare protection"""
+    def bypass_cloudflare_manually(self, url):
+        """Manual Cloudflare bypass with user interaction"""
         print("\n" + "="*50)
-        print("CLOUDFLARE BYPASS REQUIRED")
+        print("CLOUDFLARE DETECTED - MANUAL BYPASS REQUIRED")
         print("="*50)
-        print("\nIf you see a Cloudflare verification page:")
-        print("1. Complete the CAPTCHA/verification manually")
-        print("2. Wait for the page to load completely")
-        print("3. Return to this terminal")
-        print("\nThe script will automatically continue in 30 seconds...")
-        print("\nPress Enter when you've completed the Cloudflare verification...")
         
+        print(f"\n1. Opening browser to: {url}")
+        print("2. If you see a Cloudflare verification page:")
+        print("   - Complete the CAPTCHA/verification manually")
+        print("   - Wait for the page to load completely")
+        print("   - You should see the video page")
+        print("3. Return to this terminal and press Enter")
+        print("\nThe browser will open in 5 seconds...")
+        
+        time.sleep(5)
+        
+        # Open the URL
+        self.driver.get(url)
+        
+        # Wait for user to complete verification
+        print("\n⏳ Waiting for you to complete Cloudflare verification...")
+        print("Press Enter in this terminal AFTER you've successfully loaded the page.")
         input()
         
-        # Additional wait time
-        time.sleep(5)
-        print("✓ Continuing with script...")
+        # Additional wait for page to stabilize
+        time.sleep(3)
+        
+        # Check if we're still on Cloudflare
+        current_url = self.driver.current_url
+        page_source = self.driver.page_source.lower()
+        
+        if "cloudflare" in page_source or "challenge" in page_source:
+            print("⚠ Still detecting Cloudflare. Let's try again...")
+            return self.bypass_cloudflare_manually(url)
+        
+        print("✓ Cloudflare bypass successful!")
+        print(f"✓ Current URL: {current_url}")
+        
+        return True
+    
+    def save_cookies(self):
+        """Save cookies for future use"""
+        try:
+            cookies = self.driver.get_cookies()
+            with open(self.cookies_file, 'w') as f:
+                json.dump(cookies, f)
+            print("✓ Cookies saved for future sessions")
+        except Exception as e:
+            print(f"✗ Could not save cookies: {e}")
+    
+    def load_cookies(self, url):
+        """Load saved cookies"""
+        if not self.cookies_file.exists():
+            return False
+        
+        try:
+            # Go to domain first
+            parsed_url = urlparse(url)
+            domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            self.driver.get(domain)
+            time.sleep(2)
+            
+            # Load cookies
+            with open(self.cookies_file, 'r') as f:
+                cookies = json.load(f)
+            
+            for cookie in cookies:
+                try:
+                    self.driver.add_cookie(cookie)
+                except:
+                    continue
+            
+            # Refresh to apply cookies
+            self.driver.refresh()
+            time.sleep(3)
+            print("✓ Cookies loaded from previous session")
+            return True
+        except Exception as e:
+            print(f"✗ Could not load cookies: {e}")
+            return False
     
     def handle_popups(self):
         """Close any popup windows"""
@@ -173,223 +366,348 @@ class AhuakTVDownloader:
             self.driver.switch_to.window(main_window)
             
             # Try to close modal popups if present
-            try:
-                close_buttons = self.driver.find_elements(By.CLASS_NAME, "close")
-                for btn in close_buttons:
-                    if btn.is_displayed():
-                        btn.click()
-                        time.sleep(1)
-            except:
-                pass
-                
+            close_selectors = [
+                ".close", "[data-dismiss='modal']", ".modal-close",
+                ".btn-close", ".popup-close", "button[aria-label='Close']"
+            ]
+            
+            for selector in close_selectors:
+                try:
+                    close_buttons = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for btn in close_buttons:
+                        if btn.is_displayed():
+                            try:
+                                btn.click()
+                            except:
+                                self.driver.execute_script("arguments[0].click();", btn)
+                            time.sleep(1)
+                except:
+                    pass
+                    
         except Exception as e:
             print(f"Note: Could not handle popups: {e}")
     
     def click_play_button(self):
-        """Click on the play video button"""
+        """Click on the play video button with multiple strategies"""
         print("\nLooking for play button...")
         
-        try:
-            # Wait for page to load
-            time.sleep(3)
-            
-            # Try multiple selectors for play button
-            selectors = [
-                "#play-video",
-                ".play-button",
-                "button[onclick*='play']",
-                "a[href*='play']",
-                "//button[contains(text(), 'Play')]",
-                "//a[contains(text(), 'Play')]"
-            ]
-            
-            play_button = None
-            
-            for selector in selectors:
-                try:
-                    if selector.startswith("//"):
-                        play_button = self.driver.find_element(By.XPATH, selector)
-                    else:
-                        play_button = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    
-                    if play_button and play_button.is_displayed():
-                        break
-                except:
-                    continue
-            
-            if play_button and play_button.is_displayed():
-                # Scroll to element
-                self.driver.execute_script("arguments[0].scrollIntoView(true);", play_button)
-                time.sleep(1)
-                
-                # Click using JavaScript to avoid interception
-                self.driver.execute_script("arguments[0].click();", play_button)
-                print("✓ Play button clicked")
-                time.sleep(3)
-                
-                # Handle popups after clicking play
-                self.handle_popups()
+        # Wait a bit for page to load
+        time.sleep(3)
+        
+        # Try multiple strategies
+        strategies = [
+            self._click_by_id,
+            self._click_by_class,
+            self._click_by_xpath,
+            self._click_by_javascript,
+            self._click_by_video_element
+        ]
+        
+        for strategy in strategies:
+            if strategy():
                 return True
-            else:
-                print("✗ Play button not found or not visible")
-                return False
-                
-        except Exception as e:
-            print(f"✗ Error clicking play button: {e}")
+        
+        print("✗ Could not find or click play button with any strategy")
+        return False
+    
+    def _click_by_id(self):
+        """Try clicking by ID"""
+        try:
+            play_button = self.driver.find_element(By.ID, "play-video")
+            if play_button.is_displayed():
+                play_button.click()
+                print("✓ Play button clicked by ID")
+                time.sleep(2)
+                return True
+        except:
             return False
+    
+    def _click_by_class(self):
+        """Try clicking by class name"""
+        try:
+            play_buttons = self.driver.find_elements(By.CLASS_NAME, "play-video")
+            for btn in play_buttons:
+                if btn.is_displayed():
+                    btn.click()
+                    print("✓ Play button clicked by class")
+                    time.sleep(2)
+                    return True
+        except:
+            pass
+        
+        # Try other common classes
+        classes = ["play-button", "btn-play", "play-btn", "watch-btn"]
+        for class_name in classes:
+            try:
+                elements = self.driver.find_elements(By.CLASS_NAME, class_name)
+                for elem in elements:
+                    if elem.is_displayed():
+                        elem.click()
+                        print(f"✓ Play button clicked by class: {class_name}")
+                        time.sleep(2)
+                        return True
+            except:
+                continue
+        return False
+    
+    def _click_by_xpath(self):
+        """Try clicking by XPath"""
+        xpaths = [
+            "//button[contains(text(), 'Play')]",
+            "//a[contains(text(), 'Play')]",
+            "//button[contains(@onclick, 'play')]",
+            "//a[contains(@href, 'play')]",
+            "//div[contains(@class, 'play')]",
+            "//span[contains(text(), 'تشغيل')]",  # Arabic play
+            "//button[contains(text(), 'تشغيل')]"
+        ]
+        
+        for xpath in xpaths:
+            try:
+                elements = self.driver.find_elements(By.XPATH, xpath)
+                for elem in elements:
+                    if elem.is_displayed():
+                        elem.click()
+                        print(f"✓ Play button clicked by XPath: {xpath[:30]}...")
+                        time.sleep(2)
+                        return True
+            except:
+                continue
+        return False
+    
+    def _click_by_javascript(self):
+        """Try clicking using JavaScript"""
+        scripts = [
+            "document.getElementById('play-video').click();",
+            "document.querySelector('#play-video').click();",
+            "document.querySelector('.play-video').click();",
+            "document.querySelector('button.play-button').click();",
+            "var els = document.getElementsByClassName('play-video'); if(els.length>0) els[0].click();"
+        ]
+        
+        for script in scripts:
+            try:
+                self.driver.execute_script(script)
+                print("✓ Play button clicked via JavaScript")
+                time.sleep(2)
+                return True
+            except:
+                continue
+        return False
+    
+    def _click_by_video_element(self):
+        """Try to find and click video element directly"""
+        try:
+            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+            for video in video_elements:
+                if video.is_displayed():
+                    # Try to play the video
+                    self.driver.execute_script("arguments[0].play();", video)
+                    print("✓ Video element played directly")
+                    time.sleep(2)
+                    return True
+        except:
+            pass
+        return False
     
     def find_best_server(self):
         """Find and select the best available server for download"""
         print("\nScanning for available servers...")
         time.sleep(5)
         
-        # List of server patterns to look for (prioritized)
+        # First, handle any popups
+        self.handle_popups()
+        
+        # Look for server selection
+        server_found = False
+        
+        # Strategy 1: Look for server dropdown/buttons
         server_patterns = [
-            "low", "360p", "480p", "sd", "mobile", 
-            "server1", "server 1", "سيرفر 1"
+            ("select", "server"),  # dropdown with server in name
+            ("div", "server"),     # div containing server
+            ("ul", "server"),      # server list
+            ("button", "server"),  # server button
+            ("a", "server"),       # server link
+            ("span", "360"),       # quality indicator
+            ("span", "480"),
+            ("span", "low"),
+            ("span", "sd")
         ]
         
-        try:
-            # Get page source to parse
-            page_source = self.driver.page_source
-            soup = BeautifulSoup(page_source, 'html.parser')
-            
-            # Look for server selection elements
-            server_elements = []
-            
-            # Common server selection patterns
-            server_selectors = [
-                "select[id*='server']",
-                "div[class*='server']",
-                "ul[class*='server']",
-                "div[id*='server']",
-                ".server-list",
-                "#servers",
-                ".server-select"
-            ]
-            
-            for selector in server_selectors:
-                elements = soup.select(selector)
-                if elements:
-                    server_elements.extend(elements)
-            
-            if not server_elements:
-                print("No server selection found. Trying to find video source directly...")
-                return self.extract_video_url()
-            
-            print(f"Found {len(server_elements)} server selection elements")
-            
-            # Try to find low quality server
-            for element in server_elements:
-                element_text = element.get_text().lower()
-                
-                for pattern in server_patterns:
-                    if pattern in element_text:
-                        print(f"✓ Found server matching '{pattern}'")
-                        
-                        # Try to click the server element
-                        try:
-                            server_id = None
-                            for attr in ['id', 'class', 'data-server']:
-                                if attr in element.attrs:
-                                    server_id = element[attr]
-                                    break
-                            
-                            if server_id:
-                                # Find and click using Selenium
-                                clickable = self.driver.find_element(
-                                    By.CSS_SELECTOR, 
-                                    f"[id*='{server_id}'], [class*='{server_id}']"
-                                )
-                                clickable.click()
-                                time.sleep(3)
-                                return self.extract_video_url()
-                        except:
-                            continue
-            
-            # If no specific server found, try the first one
-            print("No specific low-quality server found. Trying first available server...")
+        for tag, pattern in server_patterns:
             try:
-                first_server = self.driver.find_element(By.CSS_SELECTOR, 
-                                                      "select option, .server-item, [data-server]")
-                first_server.click()
-                time.sleep(3)
-                return self.extract_video_url()
-            except:
-                return self.extract_video_url()
+                elements = self.driver.find_elements(By.XPATH, f"//{tag}[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')] | //{tag}[contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')]")
                 
-        except Exception as e:
-            print(f"Error finding server: {e}")
-            return self.extract_video_url()
-    
-    def extract_video_url(self):
-        """Extract video URL from the page"""
-        print("\nExtracting video URL...")
-        
-        try:
-            # Wait for video player to load
-            time.sleep(5)
-            
-            # Try to find video element
-            video_element = None
-            video_selectors = [
-                "video",
-                "iframe[src*='video']",
-                "iframe[src*='player']",
-                "video source",
-                "[data-video-url]",
-                "#video-player",
-                ".video-player"
-            ]
-            
-            for selector in video_selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for elem in elements:
-                        if elem.is_displayed():
-                            video_element = elem
+                for element in elements:
+                    if element.is_displayed():
+                        text = element.text.lower()
+                        if 'server' in text or '360' in text or '480' in text or 'low' in text or 'sd' in text:
+                            print(f"✓ Found server element: {text[:50]}...")
+                            element.click()
+                            server_found = True
+                            time.sleep(3)
                             break
+                if server_found:
+                    break
+            except:
+                continue
+        
+        # Strategy 2: Look for quality options
+        if not server_found:
+            quality_terms = ["360p", "480p", "low", "sd", "mobile", "جودة منخفضة"]
+            for term in quality_terms:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{term}')]")
+                    for element in elements:
+                        if element.is_displayed():
+                            print(f"✓ Found quality option: {term}")
+                            element.click()
+                            server_found = True
+                            time.sleep(3)
+                            break
+                    if server_found:
+                        break
                 except:
                     continue
+        
+        # Strategy 3: Try to find and click any playable element
+        if not server_found:
+            print("No specific server found, trying to extract video directly...")
+        
+        return self.extract_video_url()
+    
+    def extract_video_url(self):
+        """Extract video URL from the page with multiple strategies"""
+        print("\nExtracting video URL...")
+        
+        # Wait for video to load
+        time.sleep(5)
+        
+        strategies = [
+            self._extract_from_video_tag,
+            self._extract_from_iframe,
+            self._extract_from_source,
+            self._extract_from_scripts,
+            self._extract_from_network_requests
+        ]
+        
+        for strategy in strategies:
+            video_url = strategy()
+            if video_url:
+                print(f"✓ Video URL found: {video_url[:80]}...")
+                return video_url
+        
+        print("✗ Could not extract video URL")
+        return None
+    
+    def _extract_from_video_tag(self):
+        """Extract from video tag"""
+        try:
+            video_elements = self.driver.find_elements(By.TAG_NAME, "video")
+            for video in video_elements:
+                src = video.get_attribute("src")
+                if src and ("http" in src or ".mp4" in src or ".m3u8" in src):
+                    return src
+                
+                # Check source children
+                sources = video.find_elements(By.TAG_NAME, "source")
+                for source in sources:
+                    src = source.get_attribute("src")
+                    if src and ("http" in src or ".mp4" in src):
+                        return src
+        except:
+            pass
+        return None
+    
+    def _extract_from_iframe(self):
+        """Extract from iframe"""
+        try:
+            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+            for iframe in iframes:
+                src = iframe.get_attribute("src")
+                if src and ("youtube" in src or "vimeo" in src or "dailymotion" in src):
+                    return src
+        except:
+            pass
+        return None
+    
+    def _extract_from_source(self):
+        """Extract from page source"""
+        try:
+            page_source = self.driver.page_source
             
-            if video_element:
-                # Get video URL from different attributes
-                url_attributes = ['src', 'data-src', 'data-video-url', 'href']
-                
-                for attr in url_attributes:
-                    video_url = video_element.get_attribute(attr)
-                    if video_url and ('http' in video_url or '.m3u8' in video_url):
-                        print(f"✓ Found video URL: {video_url[:50]}...")
-                        return video_url
-                
-                # If no URL found in attributes, try to get from page source
-                page_source = self.driver.page_source
-                
-                # Look for common video URL patterns
-                import re
-                patterns = [
-                    r'https?://[^\s"\'<>]+\.(mp4|m3u8|webm|flv)[^\s"\']*',
-                    r'src:\s*["\'](https?://[^"\']+\.(mp4|m3u8|webm|flv))["\']',
-                    r'file:\s*["\'](https?://[^"\']+)["\']',
-                    r'videoUrl:\s*["\'](https?://[^"\']+)["\']'
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, page_source, re.IGNORECASE)
-                    if matches:
-                        if isinstance(matches[0], tuple):
-                            video_url = matches[0][0]
-                        else:
-                            video_url = matches[0]
-                        print(f"✓ Found video URL in source: {video_url[:50]}...")
-                        return video_url
+            # Look for common video patterns
+            import re
             
-            print("✗ Could not extract video URL directly")
-            return None
+            patterns = [
+                r'src=["\'](https?://[^"\']+\.(mp4|m3u8|webm|flv|avi))["\']',
+                r'file:\s*["\'](https?://[^"\']+)["\']',
+                r'videoUrl:\s*["\'](https?://[^"\']+)["\']',
+                r'url["\']?\s*:\s*["\'](https?://[^"\']+)["\']',
+                r'(https?://[^\s"\']+\.m3u8[^\s"\']*)',
+                r'(https?://[^\s"\']+\.mp4[^\s"\']*)'
+            ]
             
-        except Exception as e:
-            print(f"✗ Error extracting video URL: {e}")
-            return None
+            for pattern in patterns:
+                matches = re.findall(pattern, page_source, re.IGNORECASE)
+                if matches:
+                    if isinstance(matches[0], tuple):
+                        url = matches[0][0]
+                    else:
+                        url = matches[0]
+                    
+                    # Filter out common non-video URLs
+                    if not any(x in url for x in [".js", ".css", ".png", ".jpg", ".gif"]):
+                        return url
+        except:
+            pass
+        return None
+    
+    def _extract_from_scripts(self):
+        """Extract from JavaScript variables"""
+        try:
+            scripts = [
+                "return window.videoUrl;",
+                "return window.videoSrc;",
+                "return window.video_url;",
+                "return document.videoUrl;",
+                "return player.src;",
+                "return player.getAttribute('src');"
+            ]
+            
+            for script in scripts:
+                try:
+                    result = self.driver.execute_script(script)
+                    if result and "http" in result:
+                        return result
+                except:
+                    continue
+        except:
+            pass
+        return None
+    
+    def _extract_from_network_requests(self):
+        """Try to capture network requests (limited in Selenium)"""
+        try:
+            # This is a simplified approach
+            logs = self.driver.get_log("performance")
+            
+            video_urls = []
+            for entry in logs:
+                message = json.loads(entry["message"])["message"]
+                if "Network.responseReceived" in message.get("method", ""):
+                    try:
+                        url = message["params"]["response"]["url"]
+                        if any(ext in url for ext in [".mp4", ".m3u8", ".webm", ".flv"]):
+                            video_urls.append(url)
+                    except:
+                        continue
+            
+            if video_urls:
+                return video_urls[0]
+        except:
+            pass
+        return None
     
     def download_video(self, video_url, episode_num):
         """Download video using yt-dlp"""
@@ -398,78 +716,96 @@ class AhuakTVDownloader:
             return False
         
         print(f"\nStarting download for episode {episode_num}...")
-        print(f"URL: {video_url}")
         
-        # Configure yt-dlp options
+        # Configure yt-dlp options for streaming sites
         ydl_opts = {
             'outtmpl': str(self.download_dir / f'episode_{episode_num:03d}.%(ext)s'),
-            'format': 'worst',  # Low quality
+            'format': 'worst[ext=mp4]/worst',  # Lowest quality
             'quiet': False,
             'no_warnings': False,
             'progress_hooks': [self.download_progress_hook],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Referer': 'https://ahuak.tv/',
-                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/octet-stream;q=0.8,*/*;q=0.5'
-            }
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Origin': 'https://ahuak.tv',
+                'Sec-Fetch-Dest': 'video',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'cross-site'
+            },
+            'socket_timeout': 30,
+            'retries': 10,
+            'fragment_retries': 10,
+            'skip_unavailable_fragments': True,
+            'ignoreerrors': True,
+            'no_check_certificate': True,
+            'prefer_insecure': True
         }
         
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
                 if info:
-                    print(f"✓ Successfully downloaded episode {episode_num}")
+                    filename = ydl.prepare_filename(info)
+                    print(f"✓ Successfully downloaded: {filename}")
                     return True
                 else:
                     print(f"✗ Failed to download episode {episode_num}")
                     return False
         except Exception as e:
-            print(f"✗ Download error for episode {episode_num}: {e}")
+            print(f"✗ Download error: {e}")
             
-            # Fallback: Try direct download if yt-dlp fails
-            return self.direct_download(video_url, episode_num)
+            # Try alternative method
+            return self.alternative_download(video_url, episode_num)
     
-    def direct_download(self, video_url, episode_num):
-        """Fallback direct download method"""
-        print(f"Trying direct download for episode {episode_num}...")
+    def alternative_download(self, video_url, episode_num):
+        """Alternative download method using requests"""
+        print("Trying alternative download method...")
         
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://ahuak.tv/'
+                'Referer': 'https://ahuak.tv/',
+                'Accept': '*/*',
+                'Accept-Encoding': 'identity',
+                'Range': 'bytes=0-'
             }
             
             response = requests.get(video_url, headers=headers, stream=True, timeout=30)
             response.raise_for_status()
             
-            # Determine file extension
-            content_type = response.headers.get('content-type', '')
+            # Get file extension from URL or content-type
             ext = 'mp4'
+            content_type = response.headers.get('content-type', '')
             if 'webm' in content_type:
                 ext = 'webm'
             elif 'x-matroska' in content_type:
                 ext = 'mkv'
+            elif '.m3u8' in video_url:
+                ext = 'mp4'  # HLS stream
             
-            filename = self.download_dir / f'episode_{episode_num:03d}_direct.{ext}'
+            filename = self.download_dir / f'episode_{episode_num:03d}_alt.{ext}'
+            
+            total_size = int(response.headers.get('content-length', 0))
+            block_size = 8192
+            downloaded = 0
             
             with open(filename, 'wb') as f:
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in response.iter_content(chunk_size=block_size):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
                         
                         if total_size > 0:
                             percent = (downloaded / total_size) * 100
-                            print(f"Downloading: {percent:.1f}%", end='\r')
+                            print(f"Downloading: {percent:.1f}% ({downloaded}/{total_size} bytes)", end='\r')
             
-            print(f"\n✓ Direct download completed: {filename}")
+            print(f"\n✓ Alternative download completed: {filename}")
             return True
             
         except Exception as e:
-            print(f"✗ Direct download failed: {e}")
+            print(f"✗ Alternative download failed: {e}")
             return False
     
     def download_progress_hook(self, d):
@@ -480,37 +816,53 @@ class AhuakTVDownloader:
             eta = d.get('_eta_str', 'N/A')
             print(f"Progress: {percent} | Speed: {speed} | ETA: {eta}", end='\r')
         elif d['status'] == 'finished':
-            print(f"\n✓ Download completed")
+            print(f"\n✓ Download completed successfully")
     
     def process_episode(self, episode_url, episode_num):
         """Process a single episode"""
-        print(f"\n{'='*50}")
+        print(f"\n{'='*60}")
         print(f"PROCESSING EPISODE {episode_num}")
-        print(f"{'='*50}")
+        print(f"{'='*60}")
         
         try:
-            # Navigate to episode URL
             print(f"Opening: {episode_url}")
+            
+            # Try to load cookies first
+            if episode_num == 1:
+                cookies_loaded = self.load_cookies(episode_url)
+                if not cookies_loaded:
+                    print("No previous cookies found, starting fresh session")
+            
+            # Navigate to episode URL
             self.driver.get(episode_url)
             
-            # Handle Cloudflare on first episode only
+            # Check for Cloudflare on first episode
             if episode_num == 1:
-                self.wait_for_cloudflare()
+                time.sleep(5)
+                page_source = self.driver.page_source.lower()
+                
+                if "cloudflare" in page_source or "challenge" in page_source:
+                    print("Cloudflare detected! Manual bypass required...")
+                    self.bypass_cloudflare_manually(episode_url)
+                    # Save cookies after successful bypass
+                    self.save_cookies()
             
             # Wait for page to load
-            time.sleep(5)
+            time.sleep(3)
             
             # Click play button
+            print("\nAttempting to play video...")
             if not self.click_play_button():
-                print("Trying alternative method...")
-                # Try direct video extraction
-                video_url = self.extract_video_url()
-            else:
-                # Find and select server
-                video_url = self.find_best_server()
+                print("Warning: Could not click play button, trying direct extraction...")
             
-            # Download video
+            # Handle popups
+            self.handle_popups()
+            
+            # Find server and extract video URL
+            video_url = self.find_best_server()
+            
             if video_url:
+                # Download video
                 success = self.download_video(video_url, episode_num)
                 if success:
                     print(f"✓ Episode {episode_num} completed successfully")
@@ -520,21 +872,26 @@ class AhuakTVDownloader:
                     return False
             else:
                 print(f"✗ Could not find video source for episode {episode_num}")
+                # Try to extract directly from page
+                video_url = self.extract_video_url()
+                if video_url:
+                    return self.download_video(video_url, episode_num)
                 return False
                 
         except Exception as e:
             print(f"✗ Error processing episode {episode_num}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def cleanup(self):
         """Clean up resources"""
         if self.driver:
             print("\nClosing browser...")
-            self.driver.quit()
-        
-        # Remove cookies file
-        if self.cookies_file.exists():
-            self.cookies_file.unlink()
+            try:
+                self.driver.quit()
+            except:
+                pass
         
         print("\nCleanup completed")
     
@@ -544,50 +901,76 @@ class AhuakTVDownloader:
             # Get user input
             series_url, episode_count = self.get_user_input()
             
-            # Setup Firefox driver
-            self.setup_firefox_driver()
+            # Setup Chrome driver
+            self.setup_chrome_driver()
             
             # Process each episode
             successful_downloads = 0
             
             for i in range(1, episode_count + 1):
-                # Construct episode URL (modify based on site structure)
-                if "?ep=" in series_url or "episode=" in series_url:
-                    # URL already contains episode parameter
-                    episode_url = series_url.replace("episode=", f"episode={i}")
+                # Construct episode URL
+                if "?ep=" in series_url or "&ep=" in series_url:
+                    # Replace episode number in existing parameter
+                    if "ep=" in series_url:
+                        import re
+                        episode_url = re.sub(r'ep=\d+', f'ep={i}', series_url)
+                    else:
+                        episode_url = f"{series_url}?ep={i}"
+                elif "/episode/" in series_url:
+                    # Replace episode number in path
+                    import re
+                    episode_url = re.sub(r'/episode/\d+', f'/episode/{i}', series_url)
                 else:
-                    # Add episode parameter
-                    episode_url = f"{series_url}?ep={i}"
+                    # Simple numbering
+                    episode_url = f"{series_url}/{i}" if not series_url.endswith('/') else f"{series_url}{i}"
                 
                 # Process episode
                 if self.process_episode(episode_url, i):
                     successful_downloads += 1
+                
+                # Delay between episodes to avoid rate limiting
+                if i < episode_count:
+                    delay = random.randint(5, 15)
+                    print(f"\nWaiting {delay} seconds before next episode...")
+                    time.sleep(delay)
             
             # Summary
-            print(f"\n{'='*50}")
+            print(f"\n{'='*60}")
             print("DOWNLOAD SUMMARY")
-            print(f"{'='*50}")
-            print(f"Total episodes: {episode_count}")
+            print(f"{'='*60}")
+            print(f"Total episodes requested: {episode_count}")
             print(f"Successfully downloaded: {successful_downloads}")
             print(f"Failed: {episode_count - successful_downloads}")
             print(f"Download directory: {self.download_dir.absolute()}")
+            print(f"\nCookies saved for future use: {self.cookies_file}")
             
         except KeyboardInterrupt:
-            print("\n\nDownload interrupted by user")
+            print("\n\n⚠ Download interrupted by user")
         except Exception as e:
-            print(f"\nFatal error: {e}")
+            print(f"\n✗ Fatal error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.cleanup()
 
 def main():
     """Main function"""
-    print("Ahuak.tv Downloader Script")
-    print("=" * 50)
-    print("Requirements:")
-    print("- Firefox browser installed")
-    print("- Geckodriver in PATH")
-    print("- Internet connection")
-    print("=" * 50)
+    print("="*60)
+    print("AHUAK.TV DOWNLOADER - CLOUDFLARE BYPASS EDITION")
+    print("="*60)
+    print("\nFeatures:")
+    print("- Uses undetected Chrome to bypass Cloudflare")
+    print("- Manual Cloudflare verification when needed")
+    print("- Saves cookies for future sessions")
+    print("- Multiple fallback strategies for video extraction")
+    print("- Low quality download to save bandwidth")
+    print("="*60)
+    print("\nInstructions:")
+    print("1. Enter the series URL")
+    print("2. Enter number of episodes")
+    print("3. If Cloudflare appears, complete verification manually")
+    print("4. The script will handle the rest")
+    print("="*60)
     
     # Create and run downloader
     downloader = AhuakTVDownloader()
