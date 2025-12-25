@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Video Compressor Script
-تقليل حجم ملفات الفيديو مع الحفاظ على الجودة
+Video Compressor - ضغط الفيديو دون تغيير الأبعاد
 """
 
 import os
 import sys
+import re
 import subprocess
 import shutil
 from pathlib import Path
@@ -38,130 +38,51 @@ def get_video_info(input_file):
             input_file
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return result.stdout
+        info = eval(result.stdout)['streams'][0]
+        
+        # حساب حجم الملف
+        file_size = os.path.getsize(input_file) / (1024 * 1024)  # MB
+        
+        print(f"[*] معلومات الفيديو:")
+        print(f"    الدقة: {info.get('width', '?')}x{info.get('height', '?')}")
+        print(f"    المدة: {float(info.get('duration', 0)):.1f} ثانية")
+        print(f"    الكودك: {info.get('codec_name', 'غير معروف')}")
+        print(f"    الحجم الحالي: {file_size:.1f} MB")
+        
+        if 'bit_rate' in info:
+            bitrate = int(info['bit_rate']) / 1000  # kbps
+            print(f"    البتريت: {bitrate:.0f} kbps")
+        
+        return info
     except:
+        print("[*] لا يمكن قراءة معلومات الفيديو")
         return None
 
-def compress_video_advanced(input_file, output_file, preset='balanced'):
+def compress_without_scaling(input_file, output_file, crf=28, preset='slow', 
+                            audio_bitrate='128k', tune='film'):
     """
-    ضغط الفيديو مع إعدادات متقدمة
-    
-    preset options:
-    - 'small': أصغر حجم (240p, ضغط عالي)
-    - 'balanced': توازن بين الجودة والحجم (360p)
-    - 'good': جودة جيدة (480p)
-    - 'extreme': ضغط شديد (أقل حجم ممكن)
+    ضغط الفيديو بدون تغيير الأبعاد
     """
+    if not os.path.exists(input_file):
+        print(f"[!] الملف غير موجود: {input_file}")
+        return False
     
-    presets = {
-        'extreme': {
-            'video': {
-                'scale': '426:240',
-                'crf': 32,           # ضغط عالي (18-28 عادي، 32 شديد)
-                'preset': 'veryslow', # أفضل ضغط
-                'bitrate': '400k',
-                'tune': 'film' if 'film' in input_file.lower() else 'zerolatency'
-            },
-            'audio': {
-                'codec': 'aac',
-                'bitrate': '64k',
-                'channels': '2',
-                'samplerate': '44100'
-            }
-        },
-        'small': {
-            'video': {
-                'scale': '426:240',
-                'crf': 28,
-                'preset': 'slow',
-                'bitrate': '500k',
-                'tune': 'film'
-            },
-            'audio': {
-                'codec': 'aac',
-                'bitrate': '96k',
-                'channels': '2',
-                'samplerate': '44100'
-            }
-        },
-        'balanced': {
-            'video': {
-                'scale': '640:360',
-                'crf': 26,
-                'preset': 'medium',
-                'bitrate': '800k',
-                'tune': 'film'
-            },
-            'audio': {
-                'codec': 'aac',
-                'bitrate': '128k',
-                'channels': '2',
-                'samplerate': '44100'
-            }
-        },
-        'good': {
-            'video': {
-                'scale': '854:480',
-                'crf': 24,
-                'preset': 'medium',
-                'bitrate': '1200k',
-                'tune': 'film'
-            },
-            'audio': {
-                'codec': 'aac',
-                'bitrate': '128k',
-                'channels': '2',
-                'samplerate': '44100'
-            }
-        }
-    }
+    print(f"[*] ضغط الفيديو دون تغيير الأبعاد...")
+    print(f"[*] الإدخال: {input_file}")
+    print(f"[*] الإخراج: {output_file}")
+    print(f"[*] CRF: {crf} (كلما زاد الرقم زاد الضغط)")
+    print(f"[*] Preset: {preset}")
     
-    preset_config = presets.get(preset, presets['balanced'])
+    original_size = os.path.getsize(input_file) / (1024 * 1024)  # MB
     
-    print(f"[*] إعدادات الضغط: {preset}")
-    print(f"[*] الدقة: {preset_config['video']['scale']}")
-    print(f"[*] جودة الفيديو (CRF): {preset_config['video']['crf']}")
-    
-    # بناء أمر ffmpeg
+    # بناء أمر ffmpeg بدون scale
     cmd = [
         'ffmpeg',
         '-i', input_file,
-        '-vf', f"scale={preset_config['video']['scale']}",
         '-c:v', 'libx264',
-        '-preset', preset_config['video']['preset'],
-        '-crf', str(preset_config['video']['crf']),
-        '-maxrate', preset_config['video']['bitrate'],
-        '-bufsize', str(int(preset_config['video']['bitrate'].replace('k', '')) * 2) + 'k',
-        '-tune', preset_config['video']['tune'],
-        '-c:a', preset_config['audio']['codec'],
-        '-b:a', preset_config['audio']['bitrate'],
-        '-ac', preset_config['audio']['channels'],
-        '-ar', preset_config['audio']['samplerate'],
-        '-movflags', '+faststart',
-        '-threads', '0',  # استخدام جميع الأنوية
-        '-y',
-        output_file
-    ]
-    
-    return run_compression(cmd, input_file, output_file)
-
-def compress_video_custom(input_file, output_file, width=426, height=240, crf=28, 
-                         audio_bitrate='96k', video_bitrate='500k'):
-    """
-    ضغط مخصص مع إعدادات يدوية
-    """
-    print(f"[*] الضغط المخصص: {width}x{height}")
-    print(f"[*] CRF: {crf}, البتريت: {video_bitrate}")
-    
-    cmd = [
-        'ffmpeg',
-        '-i', input_file,
-        '-vf', f"scale={width}:{height}",
-        '-c:v', 'libx264',
-        '-preset', 'slow',  # للحصول على أفضل ضغط
+        '-preset', preset,
         '-crf', str(crf),
-        '-maxrate', video_bitrate,
-        '-bufsize', str(int(video_bitrate.replace('k', '')) * 2) + 'k',
+        '-tune', tune,
         '-c:a', 'aac',
         '-b:a', audio_bitrate,
         '-ac', '2',
@@ -174,13 +95,90 @@ def compress_video_custom(input_file, output_file, width=426, height=240, crf=28
     
     return run_compression(cmd, input_file, output_file)
 
+def compress_with_crf_only(input_file, output_file, crf=30):
+    """
+    أبسط طريقة للضغط - تغيير CRF فقط
+    """
+    print(f"[*] الضغط بتغيير CRF فقط: {crf}")
+    
+    cmd = [
+        'ffmpeg',
+        '-i', input_file,
+        '-c:v', 'libx264',
+        '-crf', str(crf),
+        '-c:a', 'copy',  # نسخ الصوت بدون تغيير
+        '-y',
+        output_file
+    ]
+    
+    return run_compression(cmd, input_file, output_file)
+
+def compress_reduce_bitrate(input_file, output_file, video_bitrate='800k', audio_bitrate='96k'):
+    """
+    تقليل البتريت للفيديو والصوت
+    """
+    print(f"[*] تقليل البتريت - فيديو: {video_bitrate}, صوت: {audio_bitrate}")
+    
+    cmd = [
+        'ffmpeg',
+        '-i', input_file,
+        '-c:v', 'libx264',
+        '-b:v', video_bitrate,
+        '-maxrate', video_bitrate,
+        '-bufsize', str(int(video_bitrate.replace('k', '')) * 2) + 'k',
+        '-c:a', 'aac',
+        '-b:a', audio_bitrate,
+        '-y',
+        output_file
+    ]
+    
+    return run_compression(cmd, input_file, output_file)
+
+def compress_two_pass(input_file, output_file, video_bitrate='800k'):
+    """
+    ضغط ثنائي المرحلة (أفضل ضغط)
+    """
+    print(f"[*] ضغط ثنائي المرحلة - البتريت: {video_bitrate}")
+    
+    # المرحلة الأولى
+    pass1_cmd = [
+        'ffmpeg',
+        '-i', input_file,
+        '-c:v', 'libx264',
+        '-b:v', video_bitrate,
+        '-pass', '1',
+        '-an',  # بدون صوت في المرحلة الأولى
+        '-f', 'null',
+        '-y',
+        '/dev/null'
+    ]
+    
+    # المرحلة الثانية
+    pass2_cmd = [
+        'ffmpeg',
+        '-i', input_file,
+        '-c:v', 'libx264',
+        '-b:v', video_bitrate,
+        '-pass', '2',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-y',
+        output_file
+    ]
+    
+    try:
+        print("[*] المرحلة الأولى...")
+        subprocess.run(pass1_cmd, capture_output=True, check=True)
+        
+        print("[*] المرحلة الثانية...")
+        return run_compression(pass2_cmd, input_file, output_file)
+    except Exception as e:
+        print(f"[!] فشل الضغط ثنائي المرحلة: {e}")
+        return False
+
 def run_compression(cmd, input_file, output_file):
     """تنفيذ عملية الضغط"""
     try:
-        print(f"[*] جاري ضغط: {os.path.basename(input_file)}")
-        print(f"[*] قد تستغرق العملية بعض الوقت...")
-        
-        # الحصول على حجم الملف الأصلي
         original_size = os.path.getsize(input_file) / (1024 * 1024)  # MB
         
         # تنفيذ الأمر مع عرض التقدم
@@ -196,7 +194,6 @@ def run_compression(cmd, input_file, output_file):
         for line in process.stderr:
             if 'Duration:' in line:
                 # استخراج المدة
-                import re
                 match = re.search(r'Duration: (\d+):(\d+):(\d+\.\d+)', line)
                 if match:
                     hours, minutes, seconds = match.groups()
@@ -233,8 +230,8 @@ def run_compression(cmd, input_file, output_file):
         print(f"\n[!] خطأ: {e}")
         return False
 
-def batch_compress(folder_path, preset='small', custom_settings=None):
-    """ضغط مجموعة من الفيديوهات"""
+def batch_compress_no_scale(folder_path, crf=28, method='crf'):
+    """ضغط جميع الفيديوهات في مجلد بدون تغيير الأبعاد"""
     folder = Path(folder_path)
     
     if not folder.exists():
@@ -242,7 +239,7 @@ def batch_compress(folder_path, preset='small', custom_settings=None):
         return
     
     # إنشاء مجلد للملفات المضغوطة
-    compressed_folder = folder / "مضغوط"
+    compressed_folder = folder / "مضغوط_دون_تغيير_الأبعاد"
     compressed_folder.mkdir(exist_ok=True)
     
     # العثور على ملفات الفيديو
@@ -274,17 +271,19 @@ def batch_compress(folder_path, preset='small', custom_settings=None):
         total_original_size += original_size
         
         # اسم الملف الناتج
-        output_file = compressed_folder / f"{video_file.stem}_compressed.mp4"
+        output_file = compressed_folder / f"{video_file.stem}_مضغوط.mp4"
         
-        # الضغط
-        if custom_settings:
-            success = compress_video_custom(
-                str(video_file), str(output_file), **custom_settings
-            )
+        # الضغط بالطريقة المختارة
+        success = False
+        
+        if method == 'crf':
+            success = compress_with_crf_only(str(video_file), str(output_file), crf)
+        elif method == 'bitrate':
+            success = compress_reduce_bitrate(str(video_file), str(output_file))
+        elif method == '2pass':
+            success = compress_two_pass(str(video_file), str(output_file))
         else:
-            success = compress_video_advanced(
-                str(video_file), str(output_file), preset
-            )
+            success = compress_without_scaling(str(video_file), str(output_file), crf)
         
         if success:
             compressed_size = output_file.stat().st_size / (1024 * 1024)  # MB
@@ -292,11 +291,6 @@ def batch_compress(folder_path, preset='small', custom_settings=None):
             successful += 1
         else:
             failed.append(video_file.name)
-        
-        # تأخير بسيط بين الملفات
-        if i < len(video_files):
-            import time
-            time.sleep(1)
     
     # عرض النتائج النهائية
     print(f"\n{'='*60}")
@@ -319,10 +313,10 @@ def batch_compress(folder_path, preset='small', custom_settings=None):
     
     print(f"\n[*] الملفات المضغوطة موجودة في: {compressed_folder}")
 
-def interactive_mode():
-    """الوضع التفاعلي"""
+def interactive_menu():
+    """قائمة تفاعلية"""
     print("="*60)
-    print("أداة ضغط الفيديو - Video Compressor")
+    print("أداة ضغط الفيديو - بدون تغيير الأبعاد")
     print("="*60)
     
     # التحقق من ffmpeg
@@ -333,7 +327,7 @@ def interactive_mode():
         print("\n[*] الخيارات المتاحة:")
         print("    1. ضغط ملف فيديو واحد")
         print("    2. ضغط جميع الفيديوهات في مجلد")
-        print("    3. ضغط بإعدادات مخصصة")
+        print("    3. عرض معلومات الفيديو")
         print("    4. الخروج")
         
         choice = input("\n[?] اختر خياراً (1-4): ").strip()
@@ -346,73 +340,72 @@ def interactive_mode():
                 print("[!] الملف غير موجود")
                 continue
             
-            print("\n[*] إعدادات الضغط:")
-            print("    1. حجم صغير جداً (240p, ضغط عالي)")
-            print("    2. حجم صغير (240p)")
-            print("    3. حجم متوسط (360p)")
-            print("    4. جودة جيدة (480p)")
+            # عرض معلومات الفيديو
+            get_video_info(file_path)
             
-            preset_choice = input("[?] اختر الإعداد (1-4): ").strip()
-            presets = {'1': 'extreme', '2': 'small', '3': 'balanced', '4': 'good'}
-            preset = presets.get(preset_choice, 'small')
+            print("\n[*] اختر طريقة الضغط:")
+            print("    1. تغيير CRF فقط (بسيط)")
+            print("    2. تقليل البتريت")
+            print("    3. ضغط متقدم (CRF + إعدادات)")
+            print("    4. ضغط ثنائي المرحلة (أفضل ضغط)")
+            
+            method_choice = input("[?] اختر الطريقة (1-4): ").strip()
+            
+            # اختيار CRF
+            if method_choice in ['1', '3']:
+                crf = input("[?] أدخل قيمة CRF (18-32, 28 افتراضي): ").strip()
+                crf = int(crf) if crf.isdigit() and 18 <= int(crf) <= 32 else 28
+            else:
+                crf = 28
             
             output_path = input("[?] أدخل مسار الملف الناتج (اختياري): ").strip()
             if not output_path:
-                # اسم افتراضي
                 import datetime
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = f"{os.path.splitext(file_path)[0]}_compressed_{timestamp}.mp4"
+                output_path = f"{os.path.splitext(file_path)[0]}_مضغوط_{timestamp}.mp4"
             
-            compress_video_advanced(file_path, output_path, preset)
+            # التنفيذ حسب الطريقة
+            if method_choice == '1':
+                compress_with_crf_only(file_path, output_path, crf)
+            elif method_choice == '2':
+                compress_reduce_bitrate(file_path, output_path)
+            elif method_choice == '3':
+                compress_without_scaling(file_path, output_path, crf)
+            elif method_choice == '4':
+                compress_two_pass(file_path, output_path)
+            else:
+                compress_without_scaling(file_path, output_path, crf)
             
         elif choice == '2':
             # ضغط مجلد
             folder_path = input("[?] أدخل مسار المجلد: ").strip()
             
-            print("\n[*] إعدادات الضغط:")
-            print("    1. حجم صغير جداً (240p, ضغط عالي)")
-            print("    2. حجم صغير (240p)")
-            print("    3. حجم متوسط (360p)")
-            print("    4. جودة جيدة (480p)")
+            print("\n[*] اختر طريقة الضغط:")
+            print("    1. تغيير CRF فقط")
+            print("    2. تقليل البتريت")
+            print("    3. ضغط متقدم")
             
-            preset_choice = input("[?] اختر الإعداد (1-4): ").strip()
-            presets = {'1': 'extreme', '2': 'small', '3': 'balanced', '4': 'good'}
-            preset = presets.get(preset_choice, 'small')
+            method_choice = input("[?] اختر الطريقة (1-3): ").strip()
             
-            batch_compress(folder_path, preset)
+            methods = {'1': 'crf', '2': 'bitrate', '3': 'advanced'}
+            method = methods.get(method_choice, 'crf')
+            
+            crf = 28
+            if method == 'crf':
+                crf_input = input("[?] أدخل قيمة CRF (18-32, 28 افتراضي): ").strip()
+                if crf_input.isdigit():
+                    crf = int(crf_input)
+            
+            batch_compress_no_scale(folder_path, crf=crf, method=method)
             
         elif choice == '3':
-            # إعدادات مخصصة
+            # عرض معلومات الفيديو
             file_path = input("[?] أدخل مسار ملف الفيديو: ").strip()
-            
-            if not os.path.exists(file_path):
+            if os.path.exists(file_path):
+                get_video_info(file_path)
+            else:
                 print("[!] الملف غير موجود")
-                continue
-            
-            print("\n[*] الإعدادات المخصصة:")
-            
-            try:
-                width = int(input("[?] العرض (بالنقاط) [426]: ").strip() or "426")
-                height = int(input("[?] الارتفاع (بالنقاط) [240]: ").strip() or "240")
-                crf = int(input("[?] جودة الفيديو (CRF: 18-32) [28]: ").strip() or "28")
-                video_bitrate = input("[?] بتريت الفيديو [500k]: ").strip() or "500k"
-                audio_bitrate = input("[?] بتريت الصوت [96k]: ").strip() or "96k"
-            except ValueError:
-                print("[!] قيم غير صحيحة")
-                continue
-            
-            output_path = input("[?] أدخل مسار الملف الناتج (اختياري): ").strip()
-            if not output_path:
-                import datetime
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = f"{os.path.splitext(file_path)[0]}_custom_{timestamp}.mp4"
-            
-            compress_video_custom(
-                file_path, output_path, 
-                width=width, height=height, crf=crf,
-                video_bitrate=video_bitrate, audio_bitrate=audio_bitrate
-            )
-            
+                
         elif choice == '4':
             print("[*] مع السلامة!")
             break
@@ -420,57 +413,53 @@ def interactive_mode():
         else:
             print("[!] خيار غير صحيح")
 
-def quick_compress(input_path, output_path=None, preset='small'):
-    """ضغط سريع"""
-    if not check_ffmpeg():
-        return False
-    
-    if os.path.isdir(input_path):
-        batch_compress(input_path, preset)
-    else:
-        if not output_path:
-            output_path = f"{os.path.splitext(input_path)[0]}_compressed.mp4"
-        
-        return compress_video_advanced(input_path, output_path, preset)
-
-# استخدام من سطر الأوامر
-if __name__ == "__main__":
+def main():
+    """الدالة الرئيسية"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='أداة ضغط الفيديو')
+    parser = argparse.ArgumentParser(
+        description='ضغط الفيديو بدون تغيير الأبعاد',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+أمثلة:
+  %(prog)s -i video.mp4 -c 30
+  %(prog)s -i folder/ -m bitrate
+  %(prog)s --interactive
+        """
+    )
+    
     parser.add_argument('-i', '--input', help='مسار الملف أو المجلد')
     parser.add_argument('-o', '--output', help='مسار الملف الناتج (للملف الواحد)')
-    parser.add_argument('-p', '--preset', choices=['extreme', 'small', 'balanced', 'good'], 
-                       default='small', help='إعدادات الضغط')
-    parser.add_argument('-w', '--width', type=int, help='العرض المخصص')
-    parser.add_argument('-h', '--height', type=int, help='الارتفاع المخصص')
-    parser.add_argument('-c', '--crf', type=int, help='جودة الفيديو (CRF)')
+    parser.add_argument('-c', '--crf', type=int, default=28, 
+                       help='جودة الفيديو CRF (18-32, 28 افتراضي)')
+    parser.add_argument('-m', '--method', choices=['crf', 'bitrate', '2pass', 'advanced'],
+                       default='crf', help='طريقة الضغط')
     parser.add_argument('--interactive', action='store_true', help='الوضع التفاعلي')
     
     args = parser.parse_args()
     
     if args.interactive:
-        interactive_mode()
+        interactive_menu()
     elif args.input:
-        if args.width and args.height:
-            # إعدادات مخصصة
-            custom_settings = {
-                'width': args.width,
-                'height': args.height,
-                'crf': args.crf or 28,
-                'audio_bitrate': '96k',
-                'video_bitrate': '500k'
-            }
-            
-            if os.path.isdir(args.input):
-                batch_compress(args.input, custom_settings=custom_settings)
-            else:
-                if not args.output:
-                    args.output = f"{os.path.splitext(args.input)[0]}_custom.mp4"
-                compress_video_custom(args.input, args.output, **custom_settings)
+        if os.path.isdir(args.input):
+            batch_compress_no_scale(args.input, crf=args.crf, method=args.method)
         else:
-            # استخدام الإعدادات المسبقة
-            quick_compress(args.input, args.output, args.preset)
+            if not args.output:
+                import datetime
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                args.output = f"{os.path.splitext(args.input)[0]}_مضغوط_{timestamp}.mp4"
+            
+            if args.method == 'crf':
+                compress_with_crf_only(args.input, args.output, args.crf)
+            elif args.method == 'bitrate':
+                compress_reduce_bitrate(args.input, args.output)
+            elif args.method == '2pass':
+                compress_two_pass(args.input, args.output)
+            else:
+                compress_without_scaling(args.input, args.output, args.crf)
     else:
         # بدون معاملات، تشغيل الوضع التفاعلي
-        interactive_mode()
+        interactive_menu()
+
+if __name__ == "__main__":
+    main()
