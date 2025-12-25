@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Ultra Fast Video Downloader for 3seq.com
-Direct 240p download with parallel processing and lightning compression
+Ultra Fast Video Downloader for 3seq.com with correct URL handling
 """
 
 import os
@@ -10,18 +9,42 @@ import re
 import time
 import requests
 import subprocess
+import shutil
 import concurrent.futures
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 # ===== CONFIGURATION =====
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 HEADERS = {'User-Agent': USER_AGENT}
-MAX_WORKERS = 3  # عدد التنزيلات المتوازية
-DOWNLOAD_TIMEOUT = 300  # 5 دقائق لكل حلقة
+MAX_WORKERS = 3
+DOWNLOAD_TIMEOUT = 300
+
+def clean_directory(directory):
+    """تنظيف الملفات غير المرغوب فيها من المجلد"""
+    extensions_to_keep = ['.mp4', '.txt', '.json']
+    
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+        
+        # حذف الملفات المؤقتة
+        if any(filename.endswith(ext) for ext in ['.part', '.ytdl', '.temp', '.tmp', '.mkv', '.webm', '.m4a']):
+            try:
+                os.remove(file_path)
+                print(f"[*] حذف ملف مؤقت: {filename}")
+            except:
+                pass
+        
+        # حذف المجلدات الفارغة
+        elif os.path.isdir(file_path) and filename.endswith('.temp.download'):
+            try:
+                shutil.rmtree(file_path)
+                print(f"[*] حذف مجلد مؤقت: {filename}")
+            except:
+                pass
 
 def install_requirements():
-    """Install required packages"""
+    """تثبيت الحزم المطلوبة"""
     print("[*] فحص المتطلبات...")
     
     packages = ['requests', 'beautifulsoup4']
@@ -47,211 +70,317 @@ def install_requirements():
         print("  ✗ تثبيت ffmpeg...")
         subprocess.run(['sudo', 'apt', 'install', '-y', 'ffmpeg'], check=True)
 
-def discover_final_url(initial_url, max_retries=2):
-    """اكتشاف الرابط النهائي بعد التحويل الديناميكي"""
+def discover_final_url_with_retry(initial_url, max_retries=3):
+    """
+    اكتشاف الرابط النهائي بعد إعادة التوجيه والتحويلات
+    الآن يتبع نمط: /modablaj-terzi-episode-01-n78j/
+    """
     session = requests.Session()
     session.headers.update(HEADERS)
     
     for attempt in range(max_retries):
         try:
-            response = session.get(initial_url, timeout=8, allow_redirects=True)
+            print(f"[*] محاولة {attempt + 1}: الوصول إلى {initial_url}")
+            response = session.get(initial_url, timeout=10, allow_redirects=True)
             current_url = response.url
             
+            # إذا تم إعادة التوجيه
             if current_url != initial_url:
+                print(f"[*] تم إعادة التوجيه إلى: {current_url}")
                 return current_url
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # البحث عن meta refresh
-            meta_refresh = soup.find('meta', attrs={'http-equiv': 'refresh'})
-            if meta_refresh and 'url=' in meta_refresh.get('content', ''):
-                new_url = meta_refresh['content'].split('url=')[-1]
-                if new_url:
-                    return urljoin(initial_url, new_url)
+            # التحقق من أننا في الصفحة الصحيحة
+            title = soup.find('title')
+            if title:
+                print(f"[*] عنوان الصفحة: {title.text[:50]}...")
             
-            # البحث عن الرابط الأساسي
-            canonical = soup.find('link', {'rel': 'canonical'})
-            if canonical and canonical.get('href'):
-                final_url = canonical['href']
-                if final_url != initial_url:
-                    return final_url
+            # البحث عن أي رابط يشبه نمط المسلسل مع الرمز العشوائي
+            episode_pattern = r'/video/[^/]+-episode-\d{2}-[a-z0-9]+/'
+            all_links = soup.find_all('a', href=True)
+            
+            for link in all_links:
+                href = link['href']
+                if re.search(episode_pattern, href):
+                    final_url = urljoin(initial_url, href)
+                    if final_url != initial_url:
+                        print(f"[*] عثر على رابط الحلقة: {final_url}")
+                        return final_url
+            
+            # البحث في محتوى الصفحة عن الأنماط
+            content_pattern = r'(https?://[^"\'\s]+?episode-\d{2}-[a-z0-9]+/?[^"\'\s]*)'
+            matches = re.findall(content_pattern, response.text)
+            
+            for match in matches:
+                if '3seq.com' in match:
+                    print(f"[*] عثر على رابط في المحتوى: {match}")
+                    return match
             
             time.sleep(1)
-                
-        except Exception:
+            
+        except Exception as e:
+            print(f"[!] خطأ في اكتشاف الرابط: {e}")
             if attempt < max_retries - 1:
                 time.sleep(2)
     
+    print("[!] لم يتم العثور على رابط نهائي، استخدام الرابط الأصلي")
     return initial_url
 
-def extract_video_embed_url(page_url):
-    """استخراج رابط الفيديو من صفحة المشاهدة"""
+def extract_video_url_from_watch_page(page_url):
+    """
+    استخراج رابط الفيديو من صفحة المشاهدة مع ?do=watch
+    """
     try:
+        # إضافة ?do=watch إذا لم يكن موجوداً
         if '?do=watch' not in page_url:
-            watch_url = page_url.rstrip('/') + '/?do=watch'
+            if not page_url.endswith('/'):
+                page_url += '/'
+            watch_url = page_url + '?do=watch'
         else:
             watch_url = page_url
         
-        response = requests.get(watch_url, headers=HEADERS, timeout=8)
+        print(f"[*] جلب صفحة المشاهدة: {watch_url}")
         
-        # الطريقة 1: البحث عن m3u8 مباشرة
-        m3u8_pattern = r'(https?://[^\s"\']+\.m3u8[^\s"\']*)'
-        m3u8_matches = re.findall(m3u8_pattern, response.text)
-        for match in m3u8_matches:
-            if 'cdn-vids.xyz' in match or 'm3u8' in match.lower():
-                return match
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        response = session.get(watch_url, timeout=15)
         
-        # الطريقة 2: البحث عن iframe
+        # البحث عن m3u8 مباشرة
+        m3u8_patterns = [
+            r'(https?://[^"\'\s]+?\.m3u8[^"\'\s]*)',
+            r'src:\s*["\']([^"\']+?\.m3u8[^"\']*)["\']',
+            r'file:\s*["\']([^"\']+?\.m3u8[^"\']*)["\']'
+        ]
+        
+        for pattern in m3u8_patterns:
+            matches = re.findall(pattern, response.text, re.IGNORECASE)
+            for match in matches:
+                if match and ('m3u8' in match.lower() or 'cdn' in match):
+                    if match.startswith('//'):
+                        match = 'https:' + match
+                    print(f"[*] عثر على m3u8: {match[:80]}...")
+                    return match
+        
+        # البحث عن iframe
         soup = BeautifulSoup(response.text, 'html.parser')
-        iframe_patterns = ['vidsp.net', 'player', 'embed', 'video']
-        for pattern in iframe_patterns:
-            iframe = soup.find('iframe', {'src': re.compile(pattern, re.I)})
-            if iframe:
-                iframe_src = iframe.get('src')
-                if iframe_src:
-                    if iframe_src.startswith('//'):
-                        iframe_src = 'https:' + iframe_src
-                    return iframe_src
+        iframe_sources = []
+        
+        # جميع إمكانيات iframe
+        for iframe in soup.find_all('iframe', {'src': True}):
+            src = iframe['src']
+            if src and ('vidsp.net' in src or 'player' in src or 'embed' in src):
+                if src.startswith('//'):
+                    src = 'https:' + src
+                iframe_sources.append(src)
+                print(f"[*] عثر على iframe: {src[:80]}...")
+        
+        if iframe_sources:
+            return iframe_sources[0]
+        
+        # البحث عن مصادر الفيديو المباشرة
+        video_sources = []
+        for video in soup.find_all('video'):
+            for source in video.find_all('source', {'src': True}):
+                src = source['src']
+                if src:
+                    video_sources.append(src)
+        
+        if video_sources:
+            print(f"[*] عثر على مصادر فيديو مباشرة")
+            return video_sources[0]
+        
+        # محاولة استخراج من البيانات
+        data_patterns = [
+            r'data-video=["\']([^"\']+)["\']',
+            r'data-src=["\']([^"\']+)["\']',
+            r'data-file=["\']([^"\']+)["\']',
+            r'video_url\s*=\s*["\']([^"\']+)["\']',
+            r'videoUrl\s*=\s*["\']([^"\']+)["\']'
+        ]
+        
+        for pattern in data_patterns:
+            matches = re.findall(pattern, response.text, re.IGNORECASE)
+            for match in matches:
+                if match and ('http' in match or '//' in match):
+                    if match.startswith('//'):
+                        match = 'https:' + match
+                    print(f"[*] عثر على رابط في البيانات: {match[:80]}...")
+                    return match
         
         return None
         
-    except Exception:
+    except Exception as e:
+        print(f"[!] خطأ في استخراج رابط الفيديو: {e}")
         return None
 
-def download_with_lightning_compression(video_url, output_file):
+def smart_video_url_extractor(base_url, series_pattern, episode_num):
     """
-    تنزيل بسرعة البرق مع ضغط فوري
+    استخراج ذكي لرابط الفيديو مع معالجة كاملة للمسار
     """
+    episode_str = f"{episode_num:02d}"
+    
+    # الخطوة 1: بناء الرابط الأساسي
+    initial_url = f"{base_url}/{series_pattern}{episode_str}"
+    print(f"[*] الرابط الأساسي: {initial_url}")
+    
+    # الخطوة 2: اكتشاف الرابط النهائي (مع الرمز العشوائي)
+    final_url = discover_final_url_with_retry(initial_url)
+    print(f"[*] الرابط النهائي: {final_url}")
+    
+    # الخطوة 3: استخراج رابط الفيديو من صفحة المشاهدة
+    video_url = extract_video_url_from_watch_page(final_url)
+    
+    if not video_url:
+        print("[!] فشل استخراج رابط الفيديو، محاولة بديلة...")
+        
+        # محاولة استخدام yt-dlp مباشرة
+        try:
+            cmd = [
+                'yt-dlp',
+                '--quiet',
+                '--get-url',
+                final_url
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                video_url = result.stdout.strip()
+                print(f"[*] yt-dlp أعطى الرابط: {video_url[:80]}...")
+        except:
+            pass
+    
+    return video_url
+
+def download_with_optimized_pipeline(video_url, output_file):
+    """
+    تنزيل محسن مع معالجة أنظف للملفات
+    """
+    temp_dir = f"{output_file}_temp"
+    os.makedirs(temp_dir, exist_ok=True)
+    
     try:
-        # استخدام yt-dlp للعثور على أفضل صيغة منخفضة الجودة
-        cmd_find = [
+        # إنشاء أسماء ملفات مؤقتة في المجلد المؤقت
+        temp_download = os.path.join(temp_dir, "download.temp")
+        temp_output = os.path.join(temp_dir, "output.temp.mp4")
+        
+        # الخطوة 1: التنزيل إلى ملف مؤقت
+        print("[*] بدء التنزيل...")
+        download_cmd = [
             'yt-dlp',
-            '-F',
-            '--quiet',
-            video_url
-        ]
-        
-        result = subprocess.run(cmd_find, capture_output=True, text=True, timeout=30)
-        
-        # البحث عن الصيغة الأصغر (الأدنى جودة)
-        format_id = None
-        best_height = 9999
-        
-        for line in result.stdout.split('\n'):
-            if 'x' in line and ('mp4' in line.lower() or 'm3u8' in line.lower() or 'webm' in line.lower()):
-                # استخراج معلومات الارتفاع
-                match = re.search(r'(\d{3,4})x\d{3,4}', line)
-                if match:
-                    height = int(match.group(1))
-                    if height < best_height:
-                        best_height = height
-                        # الحصول على معرف الصيغة
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            format_id = parts[0]
-        
-        if not format_id:
-            format_id = 'worst'
-        
-        print(f"[*] تم اختيار الصيغة {format_id} (ارتفاع {best_height})")
-        
-        # الآن التنزيل المباشر مع الضغط الفوري
-        cmd_download = [
-            'yt-dlp',
-            '-f', format_id,
-            '--concurrent-fragments', '16',  # زيادة الأجزاء المتوازية
-            '--limit-rate', '0',  # لا حدود للسرعة
+            '-f', 'worst[height<=480]',
+            '--concurrent-fragments', '8',
+            '--limit-rate', '0',
             '--retries', '10',
             '--fragment-retries', '10',
-            '--skip-unavailable-fragments',
             '--no-part',
             '--no-check-certificates',
-            '--no-warnings',
             '--quiet',
             '--progress',
-            '-o', '-',  # الإخراج إلى stdout
+            '--merge-output-format', 'mp4',
+            '-o', temp_download + '.%(ext)s',
             video_url
         ]
         
-        # إعدادات ffmpeg للضغط السريع جداً
-        cmd_compress = [
+        download_start = time.time()
+        result = subprocess.run(download_cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+        
+        if result.returncode != 0:
+            print(f"[!] فشل التنزيل: {result.stderr[:200]}")
+            return False
+        
+        # البحث عن الملف الذي تم تنزيله
+        downloaded_file = None
+        for f in os.listdir(temp_dir):
+            if f.startswith("download.temp") and not f.endswith('.part'):
+                downloaded_file = os.path.join(temp_dir, f)
+                break
+        
+        if not downloaded_file:
+            print("[!] لم يتم العثور على الملف الذي تم تنزيله")
+            return False
+        
+        download_time = time.time() - download_start
+        file_size = os.path.getsize(downloaded_file) / (1024*1024)
+        print(f"[*] اكتمل التنزيل في {download_time:.1f} ثانية - الحجم: {file_size:.1f} MB")
+        
+        # الخطوة 2: الضغط السريع جداً
+        print("[*] بدء الضغط السريع...")
+        compress_cmd = [
             'ffmpeg',
-            '-i', 'pipe:0',  # الإدخال من stdin
-            '-vf', 'scale=-2:240',  # تغيير الحجم إلى 240p
-            '-c:v', 'libx264',  # استخدام h.264
+            '-i', downloaded_file,
+            '-vf', 'scale=-2:240',
+            '-c:v', 'libx264',
             '-preset', 'ultrafast',  # أسرع إعداد
-            '-tune', 'fastdecode',  # تحسين للسرعة
-            '-crf', '34',  # جودة أقل للسرعة (أعلى = أصغر حجم وأقل جودة)
-            '-c:a', 'aac',  # الصوت
-            '-b:a', '48k',  # معدل بت صوت منخفض
-            '-ac', '1',  # صوت أحادي (أصغر)
-            '-y',  # الكتابة فوق الملف
-            '-threads', '0',  # استخدام كل الأنوية
-            '-loglevel', 'error',  # تقليل السجلات
-            output_file
+            '-tune', 'fastdecode',   # لسرعة التشغيل
+            '-crf', '36',            # ضغط عالي للسرعة
+            '-c:a', 'aac',
+            '-b:a', '48k',
+            '-ac', '1',              # صوت أحادي
+            '-y',
+            '-threads', '0',         # استخدام كل الأنوية
+            '-loglevel', 'error',
+            temp_output
         ]
         
-        print(f"[*] بدء التنزيل والضغط الفوري...")
-        start_time = time.time()
+        compress_start = time.time()
+        result = subprocess.run(compress_cmd, capture_output=True, text=True, timeout=180)
         
-        # تشغيل yt-dlp وإرسال مخرجاته إلى ffmpeg
-        process_ytdlp = subprocess.Popen(
-            cmd_download,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=10**8  # buffer كبير
-        )
+        if result.returncode != 0:
+            print(f"[!] فشل الضغط: {result.stderr[:200]}")
+            return False
         
-        process_ffmpeg = subprocess.Popen(
-            cmd_compress,
-            stdin=process_ytdlp.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        compress_time = time.time() - compress_start
         
-        # الانتظار حتى الانتهاء
-        process_ytdlp.stdout.close()
-        process_ytdlp.wait()
-        process_ffmpeg.wait()
-        
-        elapsed = time.time() - start_time
-        
-        if process_ffmpeg.returncode == 0 and os.path.exists(output_file):
-            size_mb = os.path.getsize(output_file) / (1024*1024)
-            print(f"[✓] اكتمل في {elapsed:.1f} ثانية - الحجم: {size_mb:.1f} MB")
+        # الخطوة 3: نقل الملف النهائي
+        if os.path.exists(temp_output):
+            shutil.move(temp_output, output_file)
+            final_size = os.path.getsize(output_file) / (1024*1024)
+            total_time = time.time() - download_start
+            
+            print(f"[✓] اكتمل في {total_time:.1f} ثانية")
+            print(f"    التنزيل: {download_time:.1f} ثانية")
+            print(f"    الضغط: {compress_time:.1f} ثانية")
+            print(f"    الحجم النهائي: {final_size:.1f} MB")
             return True
         else:
-            print(f"[!] فشل التنزيل السريع")
+            print("[!] الملف النهائي غير موجود")
             return False
             
     except subprocess.TimeoutExpired:
-        print(f"[!] انتهت مهلة التنزيل")
+        print("[!] انتهت مهلة العملية")
         return False
     except Exception as e:
-        print(f"[!] خطأ في التنزيل: {e}")
+        print(f"[!] خطأ: {e}")
         return False
+    finally:
+        # تنظيف المجلد المؤقت
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
 
-def download_direct_without_reencode(video_url, output_file):
+def download_alternative_method(video_url, output_file):
     """
-    محاولة تنزيل مباشر بدون إعادة ترميز (أسرع)
+    طريقة بديلة للتنزيل مع تقليل العمليات
     """
     try:
-        # محاولة العثور على فيديو 240p جاهز
+        # استخدام yt-dlp مع إعدادات مبسطة
         cmd = [
             'yt-dlp',
-            '-f', 'best[height<=240]',  # أفضل جودة لا تتعدى 240p
-            '--merge-output-format', 'mp4',
-            '--concurrent-fragments', '8',
-            '--limit-rate', '0',
-            '--retries', '5',
+            '-f', 'worst[height<=360]',  # البحث عن جودة منخفضة
+            '--concurrent-fragments', '4',
             '--no-part',
+            '--merge-output-format', 'mp4',
             '--quiet',
             '--progress',
-            '-o', output_file.replace('.mp4', '.%(ext)s'),
+            '--exec', f'mv {{}} {output_file}',
+            '-o', 'temp_video',
             video_url
         ]
         
-        print(f"[*] محاولة تنزيل 240p جاهز...")
+        print("[*] تجربة طريقة التنزيل المبسطة...")
         start_time = time.time()
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
@@ -259,96 +388,71 @@ def download_direct_without_reencode(video_url, output_file):
         if result.returncode == 0 and os.path.exists(output_file):
             elapsed = time.time() - start_time
             size_mb = os.path.getsize(output_file) / (1024*1024)
-            print(f"[✓] تم تنزيل 240p جاهز في {elapsed:.1f} ثانية - الحجم: {size_mb:.1f} MB")
+            print(f"[✓] اكتمل في {elapsed:.1f} ثانية - الحجم: {size_mb:.1f} MB")
             return True
         else:
-            # إذا لم نجد 240p جاهز، نبحث عن أدنى جودة
-            cmd2 = [
-                'yt-dlp',
-                '-f', 'worst',  # أسوأ جودة
-                '--merge-output-format', 'mp4',
-                '--concurrent-fragments', '8',
-                '--limit-rate', '0',
-                '--quiet',
-                '--progress',
-                '-o', output_file,
-                video_url
-            ]
+            print("[!] فشلت الطريقة المبسطة")
+            return False
             
-            print(f"[*] تنزيل أدنى جودة متاحة...")
-            result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
-            
-            if result2.returncode == 0 and os.path.exists(output_file):
-                elapsed = time.time() - start_time
-                size_mb = os.path.getsize(output_file) / (1024*1024)
-                print(f"[✓] تم التنزيل في {elapsed:.1f} ثانية - الحجم: {size_mb:.1f} MB")
-                return True
-        
-        return False
-        
     except Exception as e:
-        print(f"[!] خطأ في التنزيل المباشر: {e}")
+        print(f"[!] خطأ في الطريقة البديلة: {e}")
         return False
 
-def process_episode_ultrafast(base_url, series_pattern, episode_num, download_dir):
+def process_episode_smart(base_url, series_pattern, episode_num, download_dir):
     """
-    معالجة حلقة واحدة بأقصى سرعة
+    معالجة حلقة واحدة بذكاء مع تنظيف الملفات
     """
-    episode_str = f"{episode_num:02d}"  # دائماً رقمين: 01, 02, ..., 10, 11, إلخ.
-    print(f"\n[*] بدء معالجة الحلقة {episode_str}")
+    episode_str = f"{episode_num:02d}"
+    print(f"\n{'='*50}")
+    print(f"[*] بدء الحلقة {episode_str}")
+    print('='*50)
+    
+    output_file = os.path.join(download_dir, f"الحلقة_{episode_str}.mp4")
+    
+    # إذا كان الملف موجوداً بالفعل
+    if os.path.exists(output_file):
+        size = os.path.getsize(output_file) / (1024*1024)
+        print(f"[!] الملف موجود بالفعل ({size:.1f} MB)، تخطي...")
+        return (episode_num, True, "موجود مسبقاً")
     
     try:
-        # بناء الرابط مع التركيز على رقم الحلقة المكون من خانتين دائمًا
-        # مثال: modablaj-terzi-episode-01, modablaj-terzi-episode-02, ..., modablaj-terzi-episode-10
-        initial_url = f"{base_url}/{series_pattern}{episode_str}"
-        
-        print(f"[*] الرابط: {initial_url}")
-        
-        # الحصول على الرابط النهائي
-        start_time = time.time()
-        final_url = discover_final_url(initial_url)
-        url_time = time.time() - start_time
-        print(f"[*] اكتشاف الرابط في {url_time:.1f} ثانية")
-        
         # استخراج رابط الفيديو
-        video_url = extract_video_embed_url(final_url)
+        video_url = smart_video_url_extractor(base_url, series_pattern, episode_num)
+        
         if not video_url:
-            print(f"[!] فشل في استخراج رابط الفيديو")
+            print(f"[!] فشل استخراج رابط الفيديو للحلقة {episode_str}")
             return (episode_num, False, "فشل استخراج الرابط")
         
-        # اسم ملف الإخراج
-        output_file = f"{download_dir}/الحلقة_{episode_str}.mp4"
+        print(f"[*] رابط الفيديو: {video_url[:100]}...")
         
-        # المحاولة الأولى: الضغط السريع جداً
-        print(f"[*] بدء التنزيل والضغط الفوري...")
-        compress_start = time.time()
+        # المحاولة الأولى: الطريقة المحسنة
+        print("[*] المحاولة 1: التنزيل المحسن...")
+        if download_with_optimized_pipeline(video_url, output_file):
+            # تنظيف المجلد بعد النجاح
+            clean_directory(download_dir)
+            return (episode_num, True, "نجح بالطريقة المحسنة")
         
-        if download_with_lightning_compression(video_url, output_file):
-            elapsed = time.time() - start_time
-            compress_time = time.time() - compress_start
-            
-            if os.path.exists(output_file):
-                size_mb = os.path.getsize(output_file) / (1024*1024)
-                print(f"[✓] اكتملت الحلقة {episode_str} في {elapsed:.1f} ثانية")
-                print(f"    الضغط: {compress_time:.1f} ثانية | الحجم: {size_mb:.1f} MB")
-                return (episode_num, True, f"اكتمل في {elapsed:.1f} ثانية")
+        # المحاولة الثانية: الطريقة البديلة
+        print("[*] المحاولة 2: الطريقة البديلة...")
+        if download_alternative_method(video_url, output_file):
+            # تنظيف المجلد بعد النجاح
+            clean_directory(download_dir)
+            return (episode_num, True, "نجح بالطريقة البديلة")
         
-        # المحاولة الثانية: تنزيل مباشر بدون إعادة ترميز
-        print(f"[*] تجربة التنزيل المباشر...")
-        if download_direct_without_reencode(video_url, output_file):
-            elapsed = time.time() - start_time
-            return (episode_num, True, f"اكتمل في {elapsed:.1f} ثانية")
-        
+        print(f"[!] فشلت جميع المحاولات للحلقة {episode_str}")
         return (episode_num, False, "فشل جميع المحاولات")
         
     except Exception as e:
-        print(f"[!] خطأ في الحلقة {episode_str}: {e}")
+        print(f"[!] خطأ غير متوقع للحلقة {episode_str}: {e}")
         return (episode_num, False, str(e))
+    finally:
+        # تنظيف نهائي للمجلد
+        clean_directory(download_dir)
 
-def main_parallel_ultrafast():
-    """التنزيل المتوازي الرئيسي بأقصى سرعة"""
+def main_parallel_smart():
+    """التنزيل المتوازي الرئيسي مع المعالجة الذكية"""
     print("="*60)
-    print("تنزيل فيديو متوازي - جودة 240p - أقصى سرعة")
+    print("تنزيل فيديو ذكي - جودة 240p")
     print("="*60)
     
     # تثبيت المتطلبات
@@ -361,90 +465,94 @@ def main_parallel_ultrafast():
     if not base_url:
         base_url = "https://x.3seq.com/video"
     
-    # طلب نمط المسلسل مع التأكد من أنه ينتهي بـ "-"
+    # نمط المسلسل (يجب أن ينتهي بـ -)
     default_pattern = "modablaj-terzi-episode-"
     series_pattern = input(f"نمط المسلسل [{default_pattern}]: ").strip()
     if not series_pattern:
         series_pattern = default_pattern
     
-    # التأكد من أن النمط ينتهي بـ "-" لإضافة الأرقام
     if not series_pattern.endswith('-'):
         series_pattern += '-'
     
-    # استخراج اسم المسلسل للمجلد (الجزء قبل أول "-episode-")
-    series_name = series_pattern.split('-episode-')[0] if '-episode-' in series_pattern else series_pattern.rstrip('-')
+    # استخراج اسم المسلسل
+    if '-episode-' in series_pattern:
+        series_name = series_pattern.split('-episode-')[0]
+    else:
+        series_name = series_pattern.rstrip('-')
     
-    # إنشاء مجلد التنزيل باسم المسلسل فقط
+    # إنشاء مجلد التنزيل
     download_dir = series_name
-    counter = 1
-    while os.path.exists(download_dir):
-        download_dir = f"{series_name}_{counter}"
-        counter += 1
+    if os.path.exists(download_dir):
+        # تنظيف المجلد الموجود
+        clean_directory(download_dir)
+        print(f"[*] استخدام المجلد الموجود: {download_dir}")
+    else:
+        os.makedirs(download_dir, exist_ok=True)
+        print(f"[*] تم إنشاء مجلد جديد: {download_dir}")
     
-    os.makedirs(download_dir, exist_ok=True)
-    
+    # إدخال أرقام الحلقات
     try:
-        start_ep = input("الحلقة الأولى [1]: ").strip()
-        start_ep = int(start_ep) if start_ep else 1
-        
-        end_ep = input("الحلقة الأخيرة [10]: ").strip()
-        end_ep = int(end_ep) if end_ep else 10
+        start_ep = int(input("الحلقة الأولى [1]: ").strip() or "1")
+        end_ep = int(input("الحلقة الأخيرة [10]: ").strip() or "10")
         
         if start_ep > end_ep:
-            print("[!] رقم الحلقة الأولى يجب أن يكون أصغر من الأخيرة")
+            print("[!] الحلقة الأولى يجب أن تكون أصغر من الأخيرة")
             return
     except:
-        print("[!] أرقام حلقات غير صالحة")
+        print("[!] أرقام غير صالحة")
         return
     
-    # عدد العمليات المتوازية
-    workers_input = input(f"عدد التنزيلات المتوازية [1-{MAX_WORKERS}، الافتراضي: 3]: ").strip()
+    # عدد التنزيلات المتوازية
+    workers_input = input(f"التنزيلات المتوازية [1-{MAX_WORKERS}، الافتراضي: 2]: ").strip()
     try:
-        parallel_workers = int(workers_input) if workers_input else MAX_WORKERS
+        parallel_workers = int(workers_input) if workers_input else 2
         parallel_workers = min(max(1, parallel_workers), MAX_WORKERS)
     except:
-        parallel_workers = MAX_WORKERS
+        parallel_workers = 2
     
     print(f"\n{'='*60}")
-    print("[*] بدء التنزيل المتوازي")
+    print("[*] بدء التنزيل الذكي")
+    print('='*60)
     print(f"    المسلسل: {series_name}")
     print(f"    النمط: {series_pattern}XX")
-    print(f"    الحلقات: من {start_ep:02d} إلى {end_ep:02d}")
-    print(f"    الجودة: 240p فائق السرعة")
+    print(f"    الحلقات: {start_ep:02d} إلى {end_ep:02d}")
     print(f"    التنزيلات المتوازية: {parallel_workers}")
     print(f"    المجلد: {download_dir}/")
     print('='*60)
     
-    # إعداد قائمة الحلقات
+    # إنشاء قائمة الحلقات
     episodes = list(range(start_ep, end_ep + 1))
     
-    # تنزيل متوازي
+    # التنزيل المتوازي
     successful = 0
     failed = []
-    results = []
+    start_time = time.time()
     
-    total_start_time = time.time()
-    
-    # استخدام ThreadPoolExecutor للتنزيل المتوازي
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_workers) as executor:
-        # إنشاء قائمة المهام
-        future_to_episode = {}
+        # إرسال المهام
+        future_to_ep = {}
         
         for ep in episodes:
             future = executor.submit(
-                process_episode_ultrafast,
+                process_episode_smart,
                 base_url,
                 series_pattern,
                 ep,
                 download_dir
             )
-            future_to_episode[future] = ep
+            future_to_ep[future] = ep
         
-        # معالجة النتائج عند اكتمالها
-        for future in concurrent.futures.as_completed(future_to_episode):
-            ep = future_to_episode[future]
+        # معالجة النتائج
+        completed = 0
+        total = len(episodes)
+        
+        for future in concurrent.futures.as_completed(future_to_ep):
+            ep = future_to_ep[future]
+            completed += 1
+            
             try:
                 ep_num, success, message = future.result()
+                
                 if success:
                     successful += 1
                     print(f"[✓] الحلقة {ep_num:02d}: {message}")
@@ -452,17 +560,17 @@ def main_parallel_ultrafast():
                     failed.append(ep_num)
                     print(f"[!] الحلقة {ep_num:02d}: {message}")
                 
-                # تقرير تقدم
-                completed = successful + len(failed)
-                total = len(episodes)
-                print(f"[*] التقدم: {completed}/{total} ({completed/total*100:.0f}%)")
+                # عرض التقدم
+                progress = (completed / total) * 100
+                print(f"[*] التقدم: {completed}/{total} ({progress:.0f}%)")
                 
             except Exception as e:
                 failed.append(ep)
                 print(f"[!] خطأ غير متوقع للحلقة {ep:02d}: {e}")
     
-    # الملخص
-    total_time = time.time() - total_start_time
+    # النتائج النهائية
+    total_time = time.time() - start_time
+    
     print(f"\n{'='*60}")
     print("[*] اكتمل التنزيل")
     print('='*60)
@@ -471,121 +579,103 @@ def main_parallel_ultrafast():
         avg_time = total_time / successful
         print(f"[*] الوقت الإجمالي: {total_time:.1f} ثانية")
         print(f"[*] متوسط الوقت للحلقة: {avg_time:.1f} ثانية")
-        print(f"[*] الحلقات الناجحة: {successful}/{len(episodes)}")
-        
-        # حساب الحجم الإجمالي
-        total_size = 0
-        mp4_files = []
-        try:
-            for f in os.listdir(download_dir):
-                if f.endswith('.mp4'):
-                    mp4_files.append(f)
-                    size = os.path.getsize(f"{download_dir}/{f}") / (1024*1024)
-                    total_size += size
-            
-            print(f"[*] الحجم الإجمالي: {total_size:.1f} MB")
-            if successful > 0:
-                avg_size = total_size / successful
-                print(f"[*] متوسط الحجم للحلقة: {avg_size:.1f} MB")
-        except:
-            pass
-    else:
-        print(f"[!] لم يتم تنزيل أي حلقات")
+        print(f"[*] الناجحة: {successful}/{total}")
     
     if failed:
-        print(f"[!] الحلقات الفاشلة: {[f'{ep:02d}' for ep in failed]}")
-        print(f"\n[*] للحلقات الفاشلة، حاول التنزيل يدوياً:")
-        print(f"    yt-dlp -f worst 'رابط_الحلقة'")
+        print(f"[!] الفاشلة: {[f'{ep:02d}' for ep in failed]}")
+    
+    # عرض الملفات النهائية
+    print(f"\n[*] الملفات في {download_dir}:")
+    try:
+        mp4_files = [f for f in sorted(os.listdir(download_dir)) if f.endswith('.mp4')]
+        total_size = 0
+        
+        for file in mp4_files:
+            file_path = os.path.join(download_dir, file)
+            size = os.path.getsize(file_path) / (1024*1024)
+            total_size += size
+            print(f"    {file}: {size:.1f} MB")
+        
+        if total_size > 0:
+            print(f"[*] الحجم الإجمالي: {total_size:.1f} MB")
+            
+    except Exception as e:
+        print(f"[!] خطأ في قراءة الملفات: {e}")
     
     print('='*60)
 
-def quick_download_single_fast():
-    """تنزيل سريع لحلقة واحدة"""
-    print("\n[*] تنزيل حلقة واحدة سريع")
+def quick_single_download():
+    """تنزيل حلقة واحدة سريع"""
+    print("\n[*] تنزيل حلقة واحدة")
     
-    # خياران: إدخال رابط كامل أو بناء من مكونات
-    print("\nخيارات الإدخال:")
-    print("  1. إدخال رابط كامل")
-    print("  2. بناء الرابط من مكونات")
+    url = input("أدخل رابط الحلقة الكامل: ").strip()
     
-    choice = input("\nاختر الخيار [1]: ").strip() or "1"
+    if not url:
+        print("[!] لم يتم إدخال رابط")
+        return
     
-    if choice == "1":
-        url = input("أدخل رابط الحلقة الكامل: ").strip()
-        
-        if not url.startswith('http'):
-            print("[!] رابط غير صالح")
-            return
-        
-        # استخراج اسم المسلسل
-        match = re.search(r'/([^/]+)-episode-', url)
-        series_name = match.group(1) if match else "episode"
-        output_file = f"{series_name}_240p.mp4"
-        
-        final_url = discover_final_url(url)
-        video_url = extract_video_embed_url(final_url)
-        
+    # استخراج اسم للملف
+    match = re.search(r'/([^/]+)-episode-', url)
+    if match:
+        base_name = match.group(1)
     else:
-        # بناء الرابط من مكونات
-        base_url = input("الرابط الأساسي [https://x.3seq.com/video]: ").strip() or "https://x.3seq.com/video"
-        series_pattern = input("نمط المسلسل (مثل: modablaj-terzi-episode-): ").strip()
-        
-        if not series_pattern.endswith('-'):
-            series_pattern += '-'
-        
-        episode_num = input("رقم الحلقة (مثال: 01): ").strip()
-        # إذا أدخل المستخدم 1، نحوله إلى 01
-        if episode_num.isdigit():
-            episode_num = f"{int(episode_num):02d}"
-        
-        series_name = series_pattern.split('-episode-')[0] if '-episode-' in series_pattern else series_pattern.rstrip('-')
-        output_file = f"{series_name}_الحلقة_{episode_num}.mp4"
-        
-        initial_url = f"{base_url}/{series_pattern}{episode_num}"
-        final_url = discover_final_url(initial_url)
-        video_url = extract_video_embed_url(final_url)
+        base_name = "video"
+    
+    # إنشاء مجلد للتنزيل
+    download_dir = f"{base_name}_download"
+    os.makedirs(download_dir, exist_ok=True)
+    
+    output_file = os.path.join(download_dir, f"{base_name}_240p.mp4")
+    
+    print(f"\n[*] جاري المعالجة...")
+    print(f"[*] الملف النهائي: {output_file}")
+    
+    # استخراج رابط الفيديو
+    print("[*] استخراج رابط الفيديو...")
+    video_url = extract_video_url_from_watch_page(url)
     
     if not video_url:
         print("[!] فشل استخراج رابط الفيديو")
         return
     
-    print(f"\n[*] التنزيل إلى: {output_file}")
-    
     # التنزيل
+    print("[*] بدء التنزيل...")
     start_time = time.time()
     
-    # المحاولة الأولى: الضغط السريع
-    if download_with_lightning_compression(video_url, output_file):
+    if download_with_optimized_pipeline(video_url, output_file):
         elapsed = time.time() - start_time
-        size = os.path.getsize(output_file) / (1024*1024) if os.path.exists(output_file) else 0
-        print(f"\n[✓] نجاح! الملف: {output_file}")
-        print(f"    الوقت: {elapsed:.1f} ثانية | الحجم: {size:.1f} MB")
+        if os.path.exists(output_file):
+            size = os.path.getsize(output_file) / (1024*1024)
+            print(f"\n[✓] اكتمل التنزيل!")
+            print(f"    الملف: {output_file}")
+            print(f"    الحجم: {size:.1f} MB")
+            print(f"    الوقت: {elapsed:.1f} ثانية")
     else:
-        # المحاولة الثانية: تنزيل مباشر
-        print(f"\n[*] تجربة طريقة بديلة...")
-        if download_direct_without_reencode(video_url, output_file):
-            elapsed = time.time() - start_time
-            size = os.path.getsize(output_file) / (1024*1024) if os.path.exists(output_file) else 0
-            print(f"\n[✓] نجاح! الملف: {output_file}")
-            print(f"    الوقت: {elapsed:.1f} ثانية | الحجم: {size:.1f} MB")
-        else:
-            print(f"\n[!] فشل التنزيل")
+        print(f"\n[!] فشل التنزيل")
 
 if __name__ == "__main__":
     print("="*60)
-    print("تنزيل فيديو فائق السرعة - جودة 240p")
+    print("تنزيل فيديو - إصدار محسن")
     print("="*60)
     
     print("\nالخيارات:")
-    print("  1. تنزيل عدة حلقات (متوازي فائق السرعة)")
-    print("  2. تنزيل حلقة واحدة سريع")
-    print("  3. خروج")
+    print("  1. تنزيل عدة حلقات (ذكي)")
+    print("  2. تنزيل حلقة واحدة")
+    print("  3. تنظيف مجلد (حذف الملفات المؤقتة)")
+    print("  4. خروج")
     
     choice = input("\nاختر الخيار [1]: ").strip() or "1"
     
     if choice == "1":
-        main_parallel_ultrafast()
+        main_parallel_smart()
     elif choice == "2":
-        quick_download_single_fast()
+        quick_single_download()
+    elif choice == "3":
+        dir_path = input("أدخل مسار المجلد المراد تنظيفه: ").strip()
+        if os.path.isdir(dir_path):
+            clean_directory(dir_path)
+            print("[✓] تم تنظيف المجلد")
+        else:
+            print("[!] مسار غير صالح")
     else:
         print("[*] مع السلامة!")
