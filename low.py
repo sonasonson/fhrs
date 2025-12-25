@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Smart script for downloading The Protector series episodes from 3seq website
-Automatically installs required Python packages if missing
+Handles redirects and random URL codes automatically
 """
 
 import subprocess
@@ -9,7 +9,9 @@ import sys
 import re
 import os
 import time
-from typing import Optional, List
+import json
+from typing import Optional, Tuple, Dict, Any
+from urllib.parse import urlparse, urljoin, parse_qs, urlencode
 
 def install_package(package: str) -> None:
     """Install a Python package if it's not already installed"""
@@ -50,11 +52,308 @@ def check_system_dependencies() -> None:
             print("[X] Failed to install pip. Please install manually: sudo apt install python3-pip")
             sys.exit(1)
 
-def get_episode_url(base_url: str, episode_num: int) -> str:
+def get_final_url_with_redirect(session, initial_url: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Follow redirects to get the final URL with random code
+    Returns the final URL and response information
+    """
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Referer': 'https://www.google.com/',
+    }
+    
+    try:
+        print(f"    Following redirects from: {initial_url}")
+        
+        # Allow redirects and get final URL
+        response = session.get(initial_url, headers=headers, allow_redirects=True, timeout=30)
+        response.raise_for_status()
+        
+        final_url = response.url
+        print(f"    Final redirected URL: {final_url}")
+        
+        # Parse the URL to extract components
+        parsed_url = urlparse(final_url)
+        path_parts = parsed_url.path.split('/')
+        
+        # Extract the random code from the URL (like -26rf, -pjh0)
+        random_code = None
+        for part in path_parts:
+            if part and '-' in part and re.search(r'[a-z0-9]{4}$', part):
+                random_code = part.split('-')[-1]
+                break
+        
+        return final_url, {
+            'response': response,
+            'random_code': random_code,
+            'parsed_url': parsed_url
+        }
+        
+    except Exception as e:
+        print(f"    [X] Error following redirects: {e}")
+        return initial_url, {'error': str(e)}
+
+def analyze_page_content(response_text: str) -> Dict[str, Any]:
+    """
+    Analyze the page content for video sources and player configurations
+    """
+    from bs4 import BeautifulSoup
+    
+    analysis = {
+        'video_sources': [],
+        'scripts': [],
+        'iframes': [],
+        'video_tags': [],
+        'player_configs': [],
+        'm3u8_links': [],
+        'mp4_links': []
+    }
+    
+    try:
+        soup = BeautifulSoup(response_text, 'html.parser')
+        
+        # Find all video sources
+        for source in soup.find_all('source'):
+            src = source.get('src')
+            if src:
+                analysis['video_sources'].append({
+                    'src': src,
+                    'type': source.get('type', ''),
+                    'quality': source.get('title', source.get('label', ''))
+                })
+        
+        # Find all video tags
+        for video in soup.find_all('video'):
+            src = video.get('src')
+            if src:
+                analysis['video_tags'].append({
+                    'src': src,
+                    'poster': video.get('poster', ''),
+                    'attributes': dict(video.attrs)
+                })
+        
+        # Find all iframes
+        for iframe in soup.find_all('iframe'):
+            src = iframe.get('src')
+            if src:
+                analysis['iframes'].append(src)
+        
+        # Find all script tags that might contain video config
+        for script in soup.find_all('script'):
+            if script.string:
+                script_content = script.string
+                analysis['scripts'].append(script_content[:500] + '...' if len(script_content) > 500 else script_content)
+                
+                # Look for common video player configurations
+                patterns = [
+                    r'file\s*:\s*["\']([^"\']+\.(?:mp4|m3u8|webm))["\']',
+                    r'src\s*:\s*["\']([^"\']+\.(?:mp4|m3u8|webm))["\']',
+                    r'videoUrl\s*:\s*["\']([^"\']+\.(?:mp4|m3u8|webm))["\']',
+                    r'url\s*:\s*["\']([^"\']+\.(?:mp4|m3u8|webm))["\']',
+                    r'source\s*:\s*["\']([^"\']+\.(?:mp4|m3u8|webm))["\']',
+                    r'"(?:file|src|url|source)"\s*:\s*["\']([^"\']+\.(?:mp4|m3u8|webm))["\']'
+                ]
+                
+                for pattern in patterns:
+                    matches = re.findall(pattern, script_content, re.IGNORECASE)
+                    for match in matches:
+                        analysis['player_configs'].append(match)
+        
+        # Find direct links in the page
+        all_links = soup.find_all('a', href=True)
+        for link in all_links:
+            href = link['href']
+            if href.lower().endswith('.m3u8'):
+                analysis['m3u8_links'].append(href)
+            elif href.lower().endswith('.mp4'):
+                analysis['mp4_links'].append(href)
+        
+        # Also search in the entire HTML for video links
+        html_text = str(soup)
+        m3u8_patterns = re.findall(r'https?://[^\s"\']+\.m3u8[^\s"\']*', html_text, re.IGNORECASE)
+        mp4_patterns = re.findall(r'https?://[^\s"\']+\.mp4[^\s"\']*', html_text, re.IGNORECASE)
+        
+        analysis['m3u8_links'].extend(m3u8_patterns)
+        analysis['mp4_links'].extend(mp4_patterns)
+        
+        # Remove duplicates
+        analysis['m3u8_links'] = list(set(analysis['m3u8_links']))
+        analysis['mp4_links'] = list(set(analysis['mp4_links']))
+        
+        return analysis
+        
+    except Exception as e:
+        print(f"    [X] Error analyzing page: {e}")
+        return analysis
+
+def extract_video_url_from_page(session, page_url: str) -> Optional[str]:
+    """
+    Extract video URL from the watch page after redirect
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Referer': 'https://x.3seq.com/',
+        }
+        
+        print(f"    Fetching watch page: {page_url}")
+        response = session.get(page_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        # Analyze the page content
+        analysis = analyze_page_content(response.text)
+        
+        # Strategy 1: Check for direct MP4 links (prefer low quality)
+        low_quality_mp4 = []
+        medium_quality_mp4 = []
+        high_quality_mp4 = []
+        
+        for mp4_link in analysis['mp4_links']:
+            if any(q in mp4_link.lower() for q in ['360', '480', 'low', 'small', 'sd']):
+                low_quality_mp4.append(mp4_link)
+            elif any(q in mp4_link.lower() for q in ['720', 'medium', 'hd']):
+                medium_quality_mp4.append(mp4_link)
+            elif any(q in mp4_link.lower() for q in ['1080', 'high', 'full']):
+                high_quality_mp4.append(mp4_link)
+            else:
+                medium_quality_mp4.append(mp4_link)
+        
+        # Prefer low quality first
+        if low_quality_mp4:
+            print(f"    Found {len(low_quality_mp4)} low quality MP4 links")
+            return low_quality_mp4[0]
+        
+        # Strategy 2: Check video sources from <source> tags
+        low_quality_sources = []
+        for source in analysis['video_sources']:
+            quality = source['quality'].lower() + source['src'].lower()
+            if any(q in quality for q in ['360', '480', 'low', 'small', 'sd']):
+                low_quality_sources.append(source['src'])
+        
+        if low_quality_sources:
+            print(f"    Found {len(low_quality_sources)} low quality video sources")
+            return low_quality_sources[0]
+        
+        # Strategy 3: Check video tags
+        if analysis['video_tags']:
+            print(f"    Found {len(analysis['video_tags'])} video tags")
+            return analysis['video_tags'][0]['src']
+        
+        # Strategy 4: Check player configurations from scripts
+        if analysis['player_configs']:
+            print(f"    Found {len(analysis['player_configs'])} player configurations")
+            # Look for low quality in configs
+            for config in analysis['player_configs']:
+                if any(q in config.lower() for q in ['360', '480', 'low']):
+                    return config
+            return analysis['player_configs'][0]
+        
+        # Strategy 5: Check M3U8 links (streaming playlist)
+        if analysis['m3u8_links']:
+            print(f"    Found {len(analysis['m3u8_links'])} M3U8 links")
+            # Try to find lowest quality M3U8
+            for m3u8 in analysis['m3u8_links']:
+                if any(q in m3u8.lower() for q in ['360', '480', 'low']):
+                    return m3u8
+            return analysis['m3u8_links'][0]
+        
+        # Strategy 6: Fallback to any MP4 link
+        if medium_quality_mp4:
+            print(f"    Found {len(medium_quality_mp4)} medium quality MP4 links")
+            return medium_quality_mp4[0]
+        
+        if high_quality_mp4:
+            print(f"    Found {len(high_quality_mp4)} high quality MP4 links")
+            return high_quality_mp4[0]
+        
+        # Strategy 7: Search for common video patterns in the entire page
+        video_patterns = [
+            r'"(?:video|file|source|src|url)_?(?:url|src|file)?"\s*:\s*"([^"]+\.(?:mp4|m3u8|webm)[^"]*)"',
+            r'video\s*:\s*{[^}]*src\s*:\s*"([^"]+)"',
+            r'<video[^>]+src="([^"]+)"',
+            r'src="(https?://[^"]+\.(?:mp4|m3u8|webm)[^"]*)"'
+        ]
+        
+        for pattern in video_patterns:
+            matches = re.findall(pattern, response.text, re.IGNORECASE)
+            for match in matches:
+                if 'low' in match.lower() or '360' in match.lower() or '480' in match.lower():
+                    print(f"    Found video URL via pattern matching")
+                    return match
+        
+        print(f"    [!] No video URL found after analyzing {len(response.text)} characters of HTML")
+        print(f"    [!] Found {len(analysis['video_sources'])} video sources, {len(analysis['mp4_links'])} MP4 links")
+        
+        # Debug: Save HTML for manual inspection
+        debug_filename = f"debug_page_{int(time.time())}.html"
+        with open(debug_filename, 'w', encoding='utf-8') as f:
+            f.write(response.text[:50000])  # First 50k chars
+        print(f"    [D] Saved debug HTML to {debug_filename}")
+        
+        return None
+        
+    except Exception as e:
+        print(f"    [X] Error extracting video URL: {e}")
+        return None
+
+def process_episode(session, base_url: str, episode_num: int) -> Optional[str]:
+    """
+    Process a single episode: follow redirects, get watch page, extract video
+    Returns the video URL if found
+    """
+    print(f"\n    [*] Processing Episode {episode_num}")
+    
+    # Step 1: Generate the initial episode URL
+    episode_url = generate_episode_url(base_url, episode_num)
+    print(f"    Initial URL: {episode_url}")
+    
+    # Step 2: Follow redirects to get the final URL with random code
+    final_url, redirect_info = get_final_url_with_redirect(session, episode_url)
+    
+    if 'error' in redirect_info:
+        return None
+    
+    # Step 3: Construct the watch URL
+    parsed_url = urlparse(final_url)
+    watch_path = parsed_url.path
+    
+    # Ensure the path ends with /
+    if not watch_path.endswith('/'):
+        watch_path += '/'
+    
+    # Add ?do=watch parameter
+    watch_url = f"{parsed_url.scheme}://{parsed_url.netloc}{watch_path}?do=watch"
+    print(f"    Watch URL: {watch_url}")
+    
+    # Step 4: Extract video URL from watch page
+    video_url = extract_video_url_from_page(session, watch_url)
+    
+    return video_url
+
+def generate_episode_url(base_url: str, episode_num: int) -> str:
     """
     Generate the URL for a specific episode number
-    Handles multiple URL patterns (s01e01, episode-1, etc.)
+    Handles multiple URL patterns
     """
+    # If base_url already has a pattern like -26rf, remove it
+    base_url = re.sub(r'-[a-z0-9]{4}(?=/|$)', '', base_url)
+    
     # Pattern 1: s01e01 format (case insensitive)
     if re.search(r's\d+e\d+', base_url, re.IGNORECASE):
         pattern = re.compile(r'(s\d+e)\d+', re.IGNORECASE)
@@ -62,148 +361,25 @@ def get_episode_url(base_url: str, episode_num: int) -> str:
     
     # Pattern 2: episode-1 or episode-01 format
     elif 'episode' in base_url.lower():
-        # Find the episode number in the URL
-        base_without_ep = re.sub(r'episode[^\d]*\d+', '', base_url, flags=re.IGNORECASE)
-        return f"{base_without_ep}episode-{episode_num}"
+        # Remove any existing episode number
+        base_without_num = re.sub(r'episode[^\d]*\d+', 'episode', base_url, flags=re.IGNORECASE)
+        return f"{base_without_num}{episode_num}"
     
-    # Pattern 3: Generic number replacement (last number in URL)
+    # Pattern 3: Try to find and replace the last number
     else:
         # Find all numbers in the URL
         numbers = re.findall(r'\d+', base_url)
         if numbers:
             last_num = numbers[-1]
-            # Replace the last occurrence of the number
-            parts = base_url.rsplit(last_num, 1)
-            return f"{parts[0]}{episode_num}{parts[1]}"
+            # Replace the last occurrence
+            return base_url[::-1].replace(last_num[::-1], str(episode_num)[::-1], 1)[::-1]
         else:
-            # If no number found, append episode number at the end
+            # Append episode number
             return f"{base_url}-{episode_num}"
 
-def extract_video_url(page_url: str, session) -> Optional[str]:
+def download_video(session, video_url: str, filename: str) -> bool:
     """
-    Extract the low quality video URL from the watch page
-    Returns None if no video URL found
-    """
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-        }
-        
-        print(f"    Fetching page: {page_url}")
-        response = session.get(page_url, headers=headers, timeout=30)
-        response.raise_for_status()
-        
-        # Import BeautifulSoup here after installation check
-        from bs4 import BeautifulSoup
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Strategy 1: Look for video sources with "low" in URL or quality
-        video_sources = []
-        
-        # Check <source> tags
-        for source in soup.find_all('source'):
-            src = source.get('src')
-            if src:
-                # Check for low quality indicators
-                quality = source.get('title', '').lower() + source.get('label', '').lower() + src.lower()
-                if 'low' in quality or '360' in quality or '480' in quality:
-                    video_sources.append(('source_tag', src, quality))
-        
-        # Check <video> tags
-        for video in soup.find_all('video'):
-            src = video.get('src')
-            if src:
-                quality = video.get('title', '').lower() + src.lower()
-                if 'low' in quality or '360' in quality or '480' in quality:
-                    video_sources.append(('video_tag', src, quality))
-        
-        # Check <iframe> tags (might contain video)
-        for iframe in soup.find_all('iframe'):
-            src = iframe.get('src')
-            if src and ('video' in src.lower() or 'player' in src.lower()):
-                video_sources.append(('iframe', src, 'iframe'))
-        
-        # Check <a> tags with video extensions
-        for link in soup.find_all('a', href=True):
-            href = link['href']
-            if any(href.lower().endswith(ext) for ext in ['.mp4', '.m3u8', '.webm', '.avi', '.mkv']):
-                video_sources.append(('link', href, 'direct_link'))
-        
-        # Strategy 2: Look for common video hosting patterns in scripts
-        for script in soup.find_all('script'):
-            if script.string:
-                # Look for MP4 URLs in script content
-                mp4_urls = re.findall(r'"(https?://[^"]+\.mp4[^"]*)"', script.string)
-                for url in mp4_urls:
-                    if 'low' in url.lower() or '360' in url.lower() or '480' in url.lower():
-                        video_sources.append(('script', url, 'script_mp4'))
-        
-        # Select the best video source
-        if video_sources:
-            # Sort by quality indicators (low quality first)
-            def quality_score(source):
-                _, _, quality = source
-                score = 0
-                if 'low' in quality:
-                    score -= 10
-                if '360' in quality:
-                    score -= 5
-                if '480' in quality:
-                    score -= 3
-                if 'high' in quality or '720' in quality or '1080' in quality:
-                    score += 5
-                return score
-            
-            video_sources.sort(key=quality_score)
-            selected_source = video_sources[0]
-            video_url = selected_source[1]
-            
-            # Convert relative URL to absolute
-            if video_url.startswith('//'):
-                video_url = 'https:' + video_url
-            elif video_url.startswith('/'):
-                from urllib.parse import urljoin
-                video_url = urljoin(page_url, video_url)
-            
-            print(f"    Found video source: {selected_source[0]} (priority: {selected_source[2]})")
-            return video_url
-        
-        # Strategy 3: Look for common video player patterns
-        video_patterns = [
-            r'file:\s*["\'](https?://[^"\']+\.(?:mp4|m3u8|webm))["\']',
-            r'src:\s*["\'](https?://[^"\']+\.(?:mp4|m3u8|webm))["\']',
-            r'videoUrl:\s*["\'](https?://[^"\']+\.(?:mp4|m3u8|webm))["\']',
-        ]
-        
-        for pattern in video_patterns:
-            matches = re.findall(pattern, response.text, re.IGNORECASE)
-            for match in matches:
-                if 'low' in match.lower() or '360' in match.lower() or '480' in match.lower():
-                    print(f"    Found video URL via regex pattern")
-                    return match
-        
-        print("    [!] No video URL found in page")
-        return None
-        
-    except Exception as e:
-        print(f"    [X] Error extracting video URL: {e}")
-        return None
-
-def download_video(video_url: str, filename: str, session) -> bool:
-    """
-    Download video from direct URL with progress indicator
-    Returns True if successful, False otherwise
+    Download video from URL with progress indication
     """
     try:
         headers = {
@@ -211,18 +387,16 @@ def download_video(video_url: str, filename: str, session) -> bool:
             'Accept': '*/*',
             'Accept-Encoding': 'identity',
             'Connection': 'keep-alive',
+            'Referer': 'https://x.3seq.com/',
         }
         
         print(f"    Starting download: {filename}")
         
-        # Stream the download to handle large files
         response = session.get(video_url, headers=headers, stream=True, timeout=60)
         response.raise_for_status()
         
-        # Get file size if available
         total_size = int(response.headers.get('content-length', 0))
         
-        # Download in chunks
         downloaded = 0
         chunk_size = 8192
         
@@ -232,60 +406,42 @@ def download_video(video_url: str, filename: str, session) -> bool:
                     f.write(chunk)
                     downloaded += len(chunk)
                     
-                    # Show progress if we know total size
                     if total_size > 0:
                         percent = (downloaded / total_size) * 100
                         mb_downloaded = downloaded / (1024 * 1024)
                         mb_total = total_size / (1024 * 1024)
                         print(f"\r    Progress: {percent:.1f}% ({mb_downloaded:.1f} MB / {mb_total:.1f} MB)", end='')
         
-        print()  # New line after progress bar
-        print(f"    [✓] Download completed: {filename}")
+        print(f"\n    [✓] Download completed: {filename}")
         return True
         
     except Exception as e:
         print(f"\n    [X] Download failed: {e}")
         return False
 
-def create_download_directory() -> str:
-    """Create a directory for downloaded episodes"""
-    download_dir = "the_protector_episodes"
-    
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
-        print(f"[✓] Created download directory: {download_dir}")
-    
-    return download_dir
-
 def main():
-    """Main function to orchestrate the downloading process"""
-    print("=" * 60)
-    print("THE PROTECTOR SERIES DOWNLOADER")
-    print("=" * 60)
-    print()
+    print("=" * 70)
+    print("THE PROTECTOR SERIES DOWNLOADER (Enhanced Redirect Handling)")
+    print("=" * 70)
     
-    # Step 1: Check system dependencies
+    # Check dependencies and install packages
     check_system_dependencies()
     
-    # Step 2: Install required Python packages
     print("\n[*] Checking Python packages...")
     required_packages = ['requests', 'beautifulsoup4', 'urllib3']
     for package in required_packages:
         install_package(package)
     
-    # Now import the packages after installation check
     import requests
-    from urllib.parse import urljoin
     
-    # Create session for connection pooling
+    # Create session
     session = requests.Session()
     
-    # Step 3: Get user input
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("CONFIGURATION")
-    print("=" * 60)
+    print("=" * 70)
     
-    # Get base URL
+    # Get user input
     default_url = "https://x.3seq.com/video/modablaj-the-protector-episode-s01e01"
     base_url = input(f"Enter first episode URL [default: {default_url}]: ").strip()
     if not base_url:
@@ -307,7 +463,7 @@ def main():
         except ValueError:
             print("[!] Please enter a valid number")
     
-    # Get starting episode number
+    # Get starting episode
     while True:
         try:
             start_episode = input(f"Enter starting episode number [default: 1]: ").strip()
@@ -324,58 +480,42 @@ def main():
             print("[!] Please enter a valid number")
     
     # Create download directory
-    download_dir = create_download_directory()
+    download_dir = "the_protector_episodes"
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
+        print(f"[✓] Created download directory: {download_dir}")
     
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("STARTING DOWNLOAD PROCESS")
-    print("=" * 60)
+    print("=" * 70)
     
-    # Step 4: Download episodes
     successful_downloads = 0
     
     for episode_num in range(start_episode, start_episode + num_episodes):
-        print(f"\n[*] Processing Episode {episode_num} of {start_episode + num_episodes - 1}")
+        print(f"\n[*] Episode {episode_num} of {start_episode + num_episodes - 1}")
         
-        # Generate episode URL
-        episode_url = get_episode_url(base_url, episode_num)
+        video_url = process_episode(session, base_url, episode_num)
         
-        # Add ?do=watch parameter if not present
-        if '?do=watch' not in episode_url:
-            episode_url += '?do=watch'
+        if video_url:
+            filename = f"The_Protector_S01E{episode_num:02d}.mp4"
+            filepath = os.path.join(download_dir, filename)
+            
+            if download_video(session, video_url, filepath):
+                successful_downloads += 1
+        else:
+            print(f"    [X] Failed to process Episode {episode_num}")
         
-        print(f"    Episode URL: {episode_url}")
-        
-        # Extract video URL
-        video_url = extract_video_url(episode_url, session)
-        
-        if not video_url:
-            print(f"    [X] Skipping Episode {episode_num} - No video URL found")
-            continue
-        
-        # Generate filename
-        filename = f"The_Protector_S01E{episode_num:02d}.mp4"
-        filepath = os.path.join(download_dir, filename)
-        
-        # Download video
-        if download_video(video_url, filepath, session):
-            successful_downloads += 1
-        
-        # Small delay to be respectful to the server
-        time.sleep(1)
+        # Delay between episodes
+        time.sleep(2)
     
-    # Step 5: Summary
-    print("\n" + "=" * 60)
+    # Summary
+    print("\n" + "=" * 70)
     print("DOWNLOAD SUMMARY")
-    print("=" * 60)
-    print(f"Total episodes processed: {num_episodes}")
+    print("=" * 70)
+    print(f"Total episodes attempted: {num_episodes}")
     print(f"Successfully downloaded: {successful_downloads}")
     print(f"Failed: {num_episodes - successful_downloads}")
-    print(f"Episodes saved in: {os.path.abspath(download_dir)}")
-    
-    if successful_downloads > 0:
-        print("\n[✓] Download process completed successfully!")
-    else:
-        print("\n[!] No episodes were downloaded. Please check the URLs and try again.")
+    print(f"Download location: {os.path.abspath(download_dir)}")
     
     session.close()
 
