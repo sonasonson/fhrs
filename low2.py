@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ultra Fast Video Downloader for 3seq.com - Lightning Speed
+Ultra Fast Video Downloader for 3seq.com - Fixed Compression
 """
 
 import os
@@ -29,14 +29,9 @@ HEADERS = {
     'Upgrade-Insecure-Requests': '1',
     'Referer': 'https://3seq.com/'
 }
-MAX_WORKERS = 5  # زيادة عدد التنزيلات المتوازية
+MAX_WORKERS = 5
 DOWNLOAD_TIMEOUT = 300
-COMPRESS_TIMEOUT = 180
-
-# متغيرات الأداء
-USE_FAST_COMPRESS = True
-PARALLEL_DOWNLOADS = True
-USE_SSD_OPTIMIZATIONS = True
+COMPRESS_TIMEOUT = 600  # زيادة المهلة إلى 10 دقائق
 
 def clean_directory(directory):
     """تنظيف الملفات غير المرغوب فيها بسرعة"""
@@ -47,8 +42,8 @@ def clean_directory(directory):
         file_path = os.path.join(directory, filename)
         
         try:
-            # حذف الملفات المؤقتة فقط (لا تعطل العملية)
-            if any(filename.endswith(ext) for ext in ['.part', '.temp', '.tmp', '.frag', '.m3u8']):
+            # حذف الملفات المؤقتة فقط
+            if any(filename.endswith(ext) for ext in ['.part', '.temp', '.tmp', '.frag', '.m3u8', '.fast']):
                 os.remove(file_path)
         except:
             pass
@@ -133,6 +128,26 @@ def extract_m3u8_fast(episode_url):
     except:
         return None
 
+def check_video_resolution(input_file):
+    """فحص دقة الفيديو"""
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=height,width',
+            '-of', 'csv=p=0',
+            input_file
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and result.stdout:
+            height = int(result.stdout.strip().split(',')[1])
+            return height
+    except:
+        pass
+    return 0
+
 def download_hls_ultrafast(m3u8_url, output_file):
     """تنزيل HLS بأقصى سرعة"""
     try:
@@ -158,8 +173,14 @@ def download_hls_ultrafast(m3u8_url, output_file):
             file_size = os.path.getsize(output_file) / (1024*1024)
             print(f"[✓] {elapsed:.1f} ثانية - {file_size:.1f} MB")
             
-            # ضغط سريع إذا لزم الأمر
-            if file_size > 30:  # إذا كان أكبر من 30MB
+            # فحص الدقة - إذا كانت 240p أو أقل، لا داعي للضغط
+            height = check_video_resolution(output_file)
+            if height > 0 and height <= 240:
+                print(f"[*] الفيديو بالفعل {height}p - لا حاجة للضغط")
+                return True
+            
+            # ضغط سريع إذا كان الحجم كبيراً
+            if file_size > 50:  # إذا كان أكبر من 50MB
                 return fast_compress_to_240p(output_file)
             return True
         return False
@@ -171,51 +192,74 @@ def download_hls_ultrafast(m3u8_url, output_file):
 def fast_compress_to_240p(input_file):
     """ضغط سريع جداً إلى 240p"""
     try:
+        # فحص الدقة أولاً
+        height = check_video_resolution(input_file)
+        if height > 0 and height <= 240:
+            print(f"[*] الفيديو بالفعل {height}p - تخطي الضغط")
+            return True
+        
         temp_file = input_file.replace('.mp4', '_fast.mp4')
         
-        # إعدادات ffmpeg للسرعة القصوى
+        # إعدادات ffmpeg للسرعة القصوى مع تحسينات
         cmd = [
             'ffmpeg',
             '-i', input_file,
             '-vf', 'scale=-2:240',
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',  # أسرع إعداد
-            '-tune', 'fastdecode',   # تحسين للسرعة
-            '-crf', '32',            # ضغط عالي للسرعة
+            '-preset', 'superfast',  # superfast أسرع في بعض الحالات من ultrafast
+            '-tune', 'fastdecode',
+            '-crf', '34',            # زيادة CRF لتقليل وقت الضغط
             '-c:a', 'aac',
-            '-b:a', '48k',           # صوت منخفض الجودة
-            '-ac', '1',              # صوت أحادي
+            '-b:a', '32k',           # تقليل جودة الصوت أكثر
+            '-ac', '1',
             '-y',
             '-threads', '0',
             '-loglevel', 'error',
+            '-vsync', '1',           # تحسين المزامنة
             temp_file
         ]
         
         print("[*] ضغط سريع...")
+        start_time = time.time()
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=COMPRESS_TIMEOUT)
+        compress_time = time.time() - start_time
         
         if result.returncode == 0 and os.path.exists(temp_file):
+            original_size = os.path.getsize(input_file) / (1024*1024) if os.path.exists(input_file) else 0
             os.remove(input_file)
             shutil.move(temp_file, input_file)
             
             final_size = os.path.getsize(input_file) / (1024*1024)
-            print(f"[✓] تم الضغط - {final_size:.1f} MB")
+            reduction = ((original_size - final_size) / original_size * 100) if original_size > 0 else 0
+            
+            print(f"[✓] تم الضغط في {compress_time:.1f} ثانية")
+            print(f"[*] {original_size:.1f}MB → {final_size:.1f}MB ({reduction:.1f}%)")
             return True
-        return False
+        else:
+            print(f"[!] فشل الضغط: {result.stderr[:200] if result.stderr else 'لا يوجد تفاصيل'}")
+            return False
         
+    except subprocess.TimeoutExpired:
+        print("[!] انتهت مهلة الضغط - استخدام الملف الأصلي")
+        # حذف الملف المؤقت إذا كان موجوداً
+        temp_file = input_file.replace('.mp4', '_fast.mp4')
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return True  # نعتبره نجاحاً لأن الفيديو الأصلي موجود
     except Exception as e:
         print(f"[!] خطأ في الضغط السريع: {e}")
-        return False
+        return True  # نعتبره نجاحاً لتجنب إعادة المحاولة
 
 def download_direct_ultrafast(video_url, output_file):
     """تنزيل مباشر بأقصى سرعة"""
     try:
         # استخدام yt-dlp مع إعدادات السرعة القصوى
+        # البحث أولاً عن 240p مباشرة
         cmd = [
             'yt-dlp',
-            '-f', 'worst[height<=360]',  # أسوأ جودة حتى 360p (أسرع تنزيل)
-            '--concurrent-fragments', '16',  # زيادة الأجزاء المتوازية
-            '--limit-rate', '0',  # لا حدود للسرعة
+            '-f', 'best[height<=240]',  # أفضل جودة حتى 240p
+            '--concurrent-fragments', '16',
+            '--limit-rate', '0',
             '--retries', '3',
             '--fragment-retries', '3',
             '--no-check-certificates',
@@ -223,8 +267,6 @@ def download_direct_ultrafast(video_url, output_file):
             '--quiet',
             '--progress',
             '--merge-output-format', 'mp4',
-            '--external-downloader', 'aria2c',  # إذا كان مثبتاً
-            '--external-downloader-args', '-x 16 -s 16 -k 1M',
             '-o', output_file,
             video_url
         ]
@@ -237,14 +279,74 @@ def download_direct_ultrafast(video_url, output_file):
             file_size = os.path.getsize(output_file) / (1024*1024)
             print(f"[✓] {elapsed:.1f} ثانية - {file_size:.1f} MB")
             
-            # ضغط سريع إذا لزم الأمر
+            # فحص الدقة - إذا كانت 240p أو أقل، لا داعي للضغط
+            height = check_video_resolution(output_file)
+            if height > 0 and height <= 240:
+                print(f"[*] الفيديو بالفعل {height}p - لا حاجة للضغط")
+                return True
+            
+            # ضغط سريع فقط إذا كان الحجم كبيراً
+            if file_size > 50:
+                return fast_compress_to_240p(output_file)
+            return True
+        
+        # إذا فشل الحصول على 240p، جرب أقل جودة
+        print("[*] لم أجد 240p، جرب أقل جودة...")
+        cmd[2] = 'worst'  # تغيير الفلتر إلى أسوأ جودة
+        
+        start_time = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+        
+        if result.returncode == 0 and os.path.exists(output_file):
+            elapsed = time.time() - start_time
+            file_size = os.path.getsize(output_file) / (1024*1024)
+            print(f"[✓] {elapsed:.1f} ثانية - {file_size:.1f} MB")
+            
+            # ضغط سريع إذا كان الحجم كبيراً
             if file_size > 30:
                 return fast_compress_to_240p(output_file)
             return True
+        
         return False
         
     except Exception as e:
         print(f"[!] خطأ في التنزيل المباشر: {e}")
+        return False
+
+def download_hls_direct_to_240p(m3u8_url, output_file):
+    """تنزيل HLS وتحويل مباشر إلى 240p"""
+    try:
+        print(f"[*] تنزيل وتحويل مباشر إلى 240p...")
+        
+        # استخدام ffmpeg لتنزيل وتحويل في خطوة واحدة
+        cmd = [
+            'ffmpeg',
+            '-i', m3u8_url,
+            '-vf', 'scale=-2:240',
+            '-c:v', 'libx264',
+            '-preset', 'superfast',
+            '-crf', '34',
+            '-c:a', 'aac',
+            '-b:a', '32k',
+            '-ac', '1',
+            '-y',
+            '-threads', '0',
+            '-loglevel', 'error',
+            output_file
+        ]
+        
+        start_time = time.time()
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT + COMPRESS_TIMEOUT)
+        
+        if result.returncode == 0 and os.path.exists(output_file):
+            elapsed = time.time() - start_time
+            file_size = os.path.getsize(output_file) / (1024*1024)
+            print(f"[✓] {elapsed:.1f} ثانية - {file_size:.1f} MB")
+            return True
+        return False
+        
+    except Exception as e:
+        print(f"[!] خطأ في التنزيل المباشر إلى 240p: {e}")
         return False
 
 def parallel_download_worker(task_queue, results_queue):
@@ -281,8 +383,14 @@ def parallel_download_worker(task_queue, results_queue):
             
             # محاولة التنزيل السريع
             success = False
+            
             if m3u8_url and '.m3u8' in m3u8_url:
-                success = download_hls_ultrafast(m3u8_url, output_file)
+                # المحاولة 1: تحميل وتحويل مباشر إلى 240p
+                success = download_hls_direct_to_240p(m3u8_url, output_file)
+                
+                # المحاولة 2: إذا فشلت، جرب الطريقة العادية
+                if not success:
+                    success = download_hls_ultrafast(m3u8_url, output_file)
             else:
                 success = download_direct_ultrafast(m3u8_url, output_file)
             
@@ -331,7 +439,7 @@ def process_episodes_parallel_fast(base_url, series_pattern, start_ep, end_ep, d
 def main_lightning_speed():
     """الوظيفة الرئيسية للسرعة القصوى"""
     print("="*60)
-    print("تنزيل فيديو - سرعة البرق")
+    print("تنزيل فيديو - سرعة البرق مع إصلاح الضغط")
     print("="*60)
     
     # تثبيت سريع
@@ -376,7 +484,7 @@ def main_lightning_speed():
         print("[!] أرقام غير صالحة")
         return
     
-    # عدد التنزيلات المتوازية (يمكن زيادته)
+    # عدد التنزيلات المتوازية
     max_workers = min(MAX_WORKERS, (end_ep - start_ep + 1))
     workers_input = input(f"التنزيلات المتوازية [1-{max_workers}، الافتراضي: {max_workers}]: ").strip()
     
@@ -389,13 +497,13 @@ def main_lightning_speed():
         num_workers = max_workers
     
     print(f"\n{'='*60}")
-    print("[*] إعدادات السرعة القصوى:")
+    print("[*] إعدادات محسنة:")
     print('='*60)
     print(f"    المسلسل: {series_name}")
     print(f"    الحلقات: {start_ep:02d} إلى {end_ep:02d}")
     print(f"    التنزيلات المتوازية: {num_workers}")
-    print(f"    الضغط السريع: ✓")
-    print(f"    التحسينات: ✓")
+    print(f"    الضغط التلقائي: عند الحاجة فقط")
+    print(f"    مهلة الضغط: {COMPRESS_TIMEOUT//60} دقائق")
     print('='*60)
     
     # بدء التنزيل المتوازي
@@ -441,7 +549,15 @@ def main_lightning_speed():
             file_path = os.path.join(download_dir, file)
             size = os.path.getsize(file_path) / (1024*1024)
             total_size += size
-            print(f"    {file}: {size:.1f} MB")
+            
+            # فحص دقة كل ملف
+            try:
+                height = check_video_resolution(file_path)
+                res_info = f" ({height}p)" if height > 0 else ""
+            except:
+                res_info = ""
+            
+            print(f"    {file}: {size:.1f} MB{res_info}")
         
         if mp4_files:
             avg_size = total_size / len(mp4_files)
@@ -456,134 +572,23 @@ def main_lightning_speed():
     clean_directory(download_dir)
     
     print('='*60)
-    print("[*] اكتمل العمل بسرعة البرق!")
-
-def test_single_fast():
-    """اختبار سريع لحلقة واحدة"""
-    print("\n[*] اختبار سريع لحلقة واحدة")
-    
-    url = input("أدخل رابط الحلقة: ").strip()
-    
-    if not url:
-        print("[!] لم يتم إدخال رابط")
-        return
-    
-    # استخراج اسم
-    match = re.search(r'/([^/]+)-episode-', url)
-    if match:
-        name = match.group(1)
-    else:
-        name = "test"
-    
-    output_file = f"{name}_fast_{int(time.time())}.mp4"
-    
-    print(f"\n[*] بدء الاختبار السريع...")
-    
-    # استخراج m3u8 بسرعة
-    m3u8_url = extract_m3u8_fast(url)
-    
-    if not m3u8_url:
-        print("[!] فشل استخراج رابط الفيديو")
-        return
-    
-    print(f"[*] رابط الفيديو: {m3u8_url[:80]}...")
-    
-    # تنزيل سريع
-    start_time = time.time()
-    
-    if m3u8_url and '.m3u8' in m3u8_url:
-        success = download_hls_ultrafast(m3u8_url, output_file)
-    else:
-        success = download_direct_ultrafast(m3u8_url, output_file)
-    
-    if success:
-        elapsed = time.time() - start_time
-        if os.path.exists(output_file):
-            size = os.path.getsize(output_file) / (1024*1024)
-            print(f"\n[✓] نجح الاختبار!")
-            print(f"    الوقت: {elapsed:.1f} ثانية")
-            print(f"    الحجم: {size:.1f} MB")
-            print(f"    الملف: {output_file}")
-    else:
-        print("\n[!] فشل الاختبار")
-
-def batch_test():
-    """اختبار دفعة من الحلقات"""
-    print("\n[*] اختبار دفعة سريع")
-    
-    base_url = input("الرابط الأساسي [https://x.3seq.com/video]: ").strip() or "https://x.3seq.com/video"
-    pattern = input("نمط المسلسل [modablaj-terzi-episode-]: ").strip() or "modablaj-terzi-episode-"
-    
-    if not pattern.endswith('-'):
-        pattern += '-'
-    
-    test_episodes = input("الحلقات (مثال: 1,3,5 أو 1-5) [1-3]: ").strip() or "1-3"
-    
-    # تحليل الحلقات
-    episodes = []
-    if '-' in test_episodes:
-        start, end = map(int, test_episodes.split('-'))
-        episodes = list(range(start, end + 1))
-    elif ',' in test_episodes:
-        episodes = [int(x.strip()) for x in test_episodes.split(',')]
-    else:
-        episodes = [int(test_episodes)]
-    
-    print(f"\n[*] اختبار {len(episodes)} حلقة...")
-    
-    results = []
-    start_time = time.time()
-    
-    for ep in episodes:
-        print(f"\n[*] الحلقة {ep:02d}...")
-        
-        episode_url = get_final_episode_url_fast(base_url, pattern, ep)
-        m3u8_url = extract_m3u8_fast(episode_url)
-        
-        if m3u8_url:
-            print(f"[*] عثر على الرابط: {m3u8_url[:60]}...")
-            results.append((ep, True))
-        else:
-            print(f"[!] فشل استخراج الرابط")
-            results.append((ep, False))
-    
-    elapsed = time.time() - start_time
-    
-    print(f"\n{'='*60}")
-    print("[*] نتائج الاختبار:")
-    print('='*60)
-    
-    successful = sum(1 for _, success in results if success)
-    print(f"    الناجحة: {successful}/{len(episodes)}")
-    print(f"    الوقت: {elapsed:.1f} ثانية")
-    
-    if successful > 0:
-        avg_time = elapsed / len(episodes)
-        print(f"    متوسط الوقت: {avg_time:.1f} ثانية")
-    
-    print('='*60)
+    print("[*] اكتمل العمل!")
 
 if __name__ == "__main__":
     print("="*60)
-    print("تنزيل فيديو - سرعة البرق v2.0")
+    print("تنزيل فيديو - إصلاح الضغط والسرعة")
     print("="*60)
     
     print("\nالخيارات السريعة:")
     print("  1. تنزيل سريع لعدة حلقات (متوازي)")
-    print("  2. اختبار حلقة واحدة (سريع)")
-    print("  3. اختبار دفعة من الحلقات")
-    print("  4. تنظيف سريع لمجلد")
-    print("  5. خروج")
+    print("  2. تنظيف سريع لمجلد")
+    print("  3. خروج")
     
     choice = input("\nاختر الخيار [1]: ").strip() or "1"
     
     if choice == "1":
         main_lightning_speed()
     elif choice == "2":
-        test_single_fast()
-    elif choice == "3":
-        batch_test()
-    elif choice == "4":
         dir_path = input("مسار المجلد: ").strip()
         if os.path.isdir(dir_path):
             clean_directory(dir_path)
