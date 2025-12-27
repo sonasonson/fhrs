@@ -2,17 +2,23 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import sys
 import time
 import subprocess
 import threading
+import requests
 from queue import Queue
 
 BASE_URL = "https://x.3seq.com/video"
 DEFAULT_PATTERN = "modablaj-terzi-episode-"
-
 MAX_WORKERS = min(4, os.cpu_count() or 2)
 TIMEOUT = 1800
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://x.3seq.com/"
+}
 
 def check_tools():
     for tool in ("yt-dlp", "ffmpeg"):
@@ -25,28 +31,35 @@ def check_tools():
 def episode_watch_url(pattern, ep):
     return f"{BASE_URL}/{pattern}{ep:02d}/?do=watch"
 
-def download_240p(url, output):
-    """
-    نترك yt-dlp يقوم بكل شيء:
-    - استخراج
-    - فك الحماية
-    - اختيار أقل جودة
-    """
+def extract_iframe(url):
+    """استخراج رابط iframe الحقيقي"""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        m = re.search(r'<iframe[^>]+src="([^"]+)"', r.text)
+        if m:
+            src = m.group(1)
+            if src.startswith("//"):
+                src = "https:" + src
+            return src
+    except:
+        pass
+    return None
+
+def download_240p(video_url, output):
+    """تحميل مباشر باستخدام yt-dlp من رابط الفيديو الحقيقي"""
     cmd = [
         "yt-dlp",
-        "-f", "bv*[height<=240]/bv*+ba/b",
+        "-f", "bv*[height<=240]/bv*/b",
         "--merge-output-format", "mp4",
         "--no-part",
         "--no-warnings",
         "--retries", "5",
         "--fragment-retries", "5",
         "--concurrent-fragments", "8",
-        "--downloader", "ffmpeg",
-        "--downloader-args", "ffmpeg:-threads 0",
+        "--add-header", "Referer:https://x.3seq.com/",
         "-o", output,
-        url
+        video_url
     ]
-
     return subprocess.run(cmd, timeout=TIMEOUT).returncode == 0
 
 def worker(q, results, pattern, folder):
@@ -59,10 +72,16 @@ def worker(q, results, pattern, folder):
                 q.task_done()
                 continue
 
-            url = episode_watch_url(pattern, ep)
-            print(f"[*] EP {ep:02d} → تحميل مباشر 240p")
+            watch_url = episode_watch_url(pattern, ep)
+            iframe = extract_iframe(watch_url)
 
-            ok = download_240p(url, out)
+            if not iframe:
+                results.append((ep, False, "فشل iframe"))
+                q.task_done()
+                continue
+
+            print(f"[*] EP {ep:02d} → تحميل 240p")
+            ok = download_240p(iframe, out)
 
             if ok and os.path.exists(out):
                 size = os.path.getsize(out) / (1024 * 1024)
@@ -99,7 +118,7 @@ def main():
     for ep in range(start, end + 1):
         q.put(ep)
 
-    print("\n🚀 بدء التحميل (yt-dlp مباشر)\n")
+    print("\n🚀 بدء التحميل الحقيقي (iframe → yt-dlp)\n")
     t0 = time.time()
 
     threads = []
