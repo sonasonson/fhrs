@@ -187,7 +187,7 @@ def compress_video_240p_simple(input_file, output_file, crf=28):
         '-vf', 'scale=-2:240',          # تحويل إلى 240p مع الحفاظ على النسبة
         '-c:v', 'libx264',
         '-crf', str(crf),
-        '-preset', 'fast',
+        '-preset', 'veryfast',
         '-c:a', 'aac',
         '-b:a', '64k',
         '-progress', 'pipe:1',
