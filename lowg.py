@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Video Downloader & Uploader - 240p Version
+Telegram Video Downloader & Uploader - Fixed Compression
 """
 
 import os
@@ -147,10 +147,10 @@ def download_video(url, output_path):
         print(f"[!] خطأ في التنزيل: {e}")
         return False
 
-# ===== COMPRESSION TO 240P =====
+# ===== COMPRESSION TO 240P - SIMPLE =====
 
-def compress_video_240p(input_file, output_file, crf=28):
-    """ضغط الفيديو إلى 240p مع شريط تقدم - الإعدادات المطلوبة"""
+def compress_video_240p_simple(input_file, output_file, crf=28):
+    """ضغط الفيديو إلى 240p بشكل بسيط"""
     if not os.path.exists(input_file):
         print(f"[!] الملف غير موجود: {input_file}")
         return False
@@ -180,18 +180,18 @@ def compress_video_240p(input_file, output_file, crf=28):
     except:
         duration = 0
     
-    # ===== إعدادات الضغط المطلوبة 240p =====
+    # ===== إعدادات بسيطة تعمل دائمًا =====
     cmd = [
         'ffmpeg',
         '-i', input_file,
         '-vf', 'scale=-2:240',          # تحويل إلى 240p مع الحفاظ على النسبة
         '-c:v', 'libx264',
-        '-crf', str(crf),               # ضغط أعلى
-        '-preset', 'fast',              # سرعة تنفيذ
+        '-crf', str(crf),
+        '-preset', 'fast',
         '-c:a', 'aac',
-        '-b:a', '64k',                  # صوت منخفض
-        '-progress', 'pipe:1',          # شريط التقدم
-        '-y',                           # نعم للكتابة فوق
+        '-b:a', '64k',
+        '-progress', 'pipe:1',
+        '-y',
         output_file
     ]
     
@@ -258,13 +258,48 @@ def compress_video_240p(input_file, output_file, crf=28):
         print(f"[+] نسبة التخفيض: {reduction:.1f}%")
         return True
     else:
-        print(f"[!] فشل الضغط")
+        # الحصول على تفاصيل الخطأ
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        print(f"[!] فشل الضغط (رمز الخروج: {process.returncode})")
+        return False
+
+# ===== CREATE THUMBNAIL =====
+
+def create_thumbnail(input_file, thumbnail_path):
+    """إنشاء صورة مصغرة للفيديو"""
+    try:
+        print(f"[*] جاري إنشاء الصورة المصغرة...")
+        
+        cmd = [
+            'ffmpeg',
+            '-i', input_file,
+            '-ss', '00:00:05',      # أخذ إطار عند الثانية الخامسة
+            '-vframes', '1',        # إطار واحد فقط
+            '-s', '320x240',        # حجم الصورة
+            '-f', 'image2',
+            '-y',
+            thumbnail_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0 and os.path.exists(thumbnail_path):
+            size = os.path.getsize(thumbnail_path) / 1024  # KB
+            print(f"[+] تم إنشاء الصورة المصغرة ({size:.1f}KB)")
+            return True
+        else:
+            print(f"[!] فشل إنشاء الصورة المصغرة")
+            return False
+            
+    except Exception as e:
+        print(f"[!] خطأ في إنشاء الصورة المصغرة: {e}")
         return False
 
 # ===== UPLOAD TO TELEGRAM =====
 
-async def upload_video_to_channel(file_path, caption):
-    """رفع الفيديو إلى القناة"""
+async def upload_video_to_channel(file_path, caption, thumbnail_path=None):
+    """رفع الفيديو إلى القناة مع صورة مصغرة اختيارية"""
     try:
         if not app or not os.path.exists(file_path):
             return False
@@ -297,16 +332,23 @@ async def upload_video_to_channel(file_path, caption):
                     print(f'\r[*] رفع: {percentage:.1f}% |{bar}| {current/1024/1024:.1f}MB/{total/1024/1024:.1f}MB ({speed:.0f}KB/s)', end='')
                     last_update = percentage
         
-        # رفع الفيديو بدون أي إضافات
+        # إعدادات الرفع
+        upload_params = {
+            'chat_id': TELEGRAM_CHANNEL,
+            'video': file_path,
+            'caption': caption,
+            'supports_streaming': True,
+            'disable_notification': False,
+            'progress': progress_callback
+        }
+        
+        # إضافة الصورة المصغرة إذا كانت موجودة
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            upload_params['thumb'] = thumbnail_path
+        
+        # رفع الفيديو
         try:
-            await app.send_video(
-                chat_id=TELEGRAM_CHANNEL,
-                video=file_path,
-                caption=caption,
-                supports_streaming=True,
-                disable_notification=False,
-                progress=progress_callback
-            )
+            await app.send_video(**upload_params)
             
             elapsed = time.time() - start_time
             print(f"\n[+] تم الرفع خلال {elapsed:.1f}ثانية")
@@ -315,7 +357,7 @@ async def upload_video_to_channel(file_path, caption):
         except FloodWait as e:
             print(f"\n[*] انتظر {e.value} ثانية...")
             await asyncio.sleep(e.value)
-            return await upload_video_to_channel(file_path, caption)
+            return await upload_video_to_channel(file_path, caption, thumbnail_path)
             
         except Exception as e:
             print(f"\n[!] خطأ في الرفع: {e}")
@@ -323,13 +365,8 @@ async def upload_video_to_channel(file_path, caption):
             # محاولة بدون progress callback
             try:
                 print("[*] جاري محاولة رفع بدون تتبع التقدم...")
-                await app.send_video(
-                    chat_id=TELEGRAM_CHANNEL,
-                    video=file_path,
-                    caption=caption,
-                    supports_streaming=True,
-                    disable_notification=False
-                )
+                upload_params.pop('progress', None)
+                await app.send_video(**upload_params)
                 print("[+] تم الرفع")
                 return True
             except Exception as e2:
@@ -399,9 +436,10 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
     
     temp_file = os.path.join(download_dir, f"temp_{episode_num:02d}.mp4")
     final_file = os.path.join(download_dir, f"{series_name_arabic}_S{season_num:02d}_E{episode_num:02d}.mp4")
+    thumbnail_file = os.path.join(download_dir, f"thumb_{episode_num:02d}.jpg")
     
     # تنظيف الملفات القديمة
-    for f in [temp_file, final_file]:
+    for f in [temp_file, final_file, thumbnail_file]:
         if os.path.exists(f):
             os.remove(f)
     
@@ -420,17 +458,24 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
         if not download_video(video_url, temp_file):
             return False, "فشل تنزيل الفيديو"
         
-        # 3. ضغط الفيديو إلى 240p
+        # 3. إنشاء صورة مصغرة من الفيديو الأصلي
+        print("[*] إنشاء صورة مصغرة...")
+        create_thumbnail(temp_file, thumbnail_file)
+        
+        # 4. ضغط الفيديو إلى 240p
         print("\n[*] بدء ضغط الفيديو إلى 240p...")
-        if not compress_video_240p(temp_file, final_file, crf=28):
+        if not compress_video_240p_simple(temp_file, final_file, crf=28):
             # إذا فشل الضغط، استخدم الملف الأصلي
             print("[!] فشل الضغط، استخدام الملف الأصلي")
             shutil.copy2(temp_file, final_file)
         
-        # 4. رفع الفيديو - تعليق بسيط بدون رموز
+        # 5. رفع الفيديو - تعليق بسيط بدون رموز
         caption = f"{series_name_arabic} الموسم {season_num} الحلقة {episode_num}"
         
-        if await upload_video_to_channel(final_file, caption):
+        # استخدام الصورة المصغرة إذا كانت موجودة
+        thumb_to_use = thumbnail_file if os.path.exists(thumbnail_file) else None
+        
+        if await upload_video_to_channel(final_file, caption, thumb_to_use):
             return True, "تم الرفع بنجاح"
         else:
             return True, "تم التنزيل فقط (فشل الرفع)"
@@ -439,10 +484,15 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
         print(f"[!] خطأ غير متوقع: {e}")
         return False, str(e)
     finally:
-        # تنظيف الملف المؤقت
+        # تنظيف الملفات المؤقتة
         if os.path.exists(temp_file):
             try:
                 os.remove(temp_file)
+            except:
+                pass
+        if os.path.exists(thumbnail_file):
+            try:
+                os.remove(thumbnail_file)
             except:
                 pass
 
@@ -451,7 +501,7 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
 async def main():
     """الدالة الرئيسية"""
     print("="*50)
-    print("Telegram Video Downloader & Uploader - 240p")
+    print("Telegram Video Downloader & Uploader - Working Version")
     print("="*50)
     
     # التحقق من التبعيات
