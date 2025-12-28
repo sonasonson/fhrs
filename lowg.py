@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram Video Downloader & Uploader - Simplified Version
+Telegram Video Downloader & Uploader - 240p Version
 """
 
 import os
@@ -12,17 +12,16 @@ import requests
 import subprocess
 import shutil
 import asyncio
-from datetime import datetime
 
 # ===== إضافة Pyrogram بعد التثبيت =====
 try:
-    from pyrogram import Client, enums
+    from pyrogram import Client
     from pyrogram.errors import FloodWait, AuthKeyUnregistered, SessionPasswordNeeded
     PYROGRAM_INSTALLED = True
 except ImportError:
-    print("[!] pyrogram غير مثبت، جاري التثبيت...")
+    print("[*] تثبيت pyrogram...")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "pyrogram", "tgcrypto"])
-    from pyrogram import Client, enums
+    from pyrogram import Client
     from pyrogram.errors import FloodWait, AuthKeyUnregistered, SessionPasswordNeeded
     PYROGRAM_INSTALLED = True
 
@@ -55,7 +54,7 @@ async def setup_telegram():
     global app
     
     print("\n" + "="*50)
-    print("🔧 إعداد Telegram API")
+    print("إعداد Telegram")
     print("="*50)
     
     try:
@@ -76,13 +75,12 @@ async def setup_telegram():
         await app.start()
         
         me = await app.get_me()
-        print(f"[✓] تم الاتصال بنجاح!")
-        print(f"    👤 الاسم: {me.first_name}")
+        print(f"[+] تم الاتصال: {me.first_name}")
         
         # التحقق من القناة
         try:
             chat = await app.get_chat(TELEGRAM_CHANNEL)
-            print(f"[✓] القناة: {chat.title}")
+            print(f"[+] القناة: {chat.title}")
         except:
             print(f"[!] تحذير: قد لا أكون مشتركاً في القناة")
         
@@ -90,10 +88,10 @@ async def setup_telegram():
         
     except SessionPasswordNeeded:
         print("\n[!] حسابك محمي بكلمة مرور (2FA)")
-        password = input("🔑 أدخل كلمة المرور: ").strip()
+        password = input("أدخل كلمة المرور: ").strip()
         try:
             await app.check_password(password)
-            print("[✓] تم التحقق من كلمة المرور")
+            print("[+] تم التحقق من كلمة المرور")
             return True
         except:
             print("[!] كلمة المرور غير صحيحة")
@@ -131,7 +129,7 @@ def download_video(url, output_path):
         # التحقق من وجود الملف
         if os.path.exists(output_path):
             size = os.path.getsize(output_path) / (1024*1024)
-            print(f"[✓] تم التنزيل خلال {elapsed:.1f}ث ({size:.1f}MB)")
+            print(f"[+] تم التنزيل خلال {elapsed:.1f}ث ({size:.1f}MB)")
             return True
         else:
             # البحث عن ملف آخر
@@ -140,7 +138,7 @@ def download_video(url, output_path):
                 if os.path.exists(base + ext):
                     shutil.move(base + ext, output_path)
                     size = os.path.getsize(output_path) / (1024*1024)
-                    print(f"[✓] تم التنزيل خلال {elapsed:.1f}ث ({size:.1f}MB)")
+                    print(f"[+] تم التنزيل خلال {elapsed:.1f}ث ({size:.1f}MB)")
                     return True
         
         return False
@@ -149,10 +147,10 @@ def download_video(url, output_path):
         print(f"[!] خطأ في التنزيل: {e}")
         return False
 
-# ===== COMPRESSION WITH PROGRESS BAR =====
+# ===== COMPRESSION TO 240P =====
 
-def compress_video_240p(input_file, output_file, crf=30):
-    """ضغط الفيديو إلى 240p مع شريط تقدم"""
+def compress_video_240p(input_file, output_file, crf=28):
+    """ضغط الفيديو إلى 240p مع شريط تقدم - الإعدادات المطلوبة"""
     if not os.path.exists(input_file):
         print(f"[!] الملف غير موجود: {input_file}")
         return False
@@ -161,7 +159,7 @@ def compress_video_240p(input_file, output_file, crf=30):
     
     print(f"[*] جاري ضغط الفيديو إلى 240p...")
     print(f"[*] الحجم الأصلي: {original_size:.1f}MB")
-    print(f"[*] CRF: {crf} (كلما زاد الرقم زاد الضغط)")
+    print(f"[*] CRF: {crf}")
     
     # الحصول على مدة الفيديو
     try:
@@ -182,18 +180,18 @@ def compress_video_240p(input_file, output_file, crf=30):
     except:
         duration = 0
     
-    # بناء أمر FFmpeg مع مراقبة التقدم
+    # ===== إعدادات الضغط المطلوبة 240p =====
     cmd = [
         'ffmpeg',
         '-i', input_file,
-        '-vf', 'scale=-2:240',
+        '-vf', 'scale=-2:240',          # تحويل إلى 240p مع الحفاظ على النسبة
         '-c:v', 'libx264',
-        '-crf', str(crf),
-        '-preset', 'fast',
+        '-crf', str(crf),               # ضغط أعلى
+        '-preset', 'fast',              # سرعة تنفيذ
         '-c:a', 'aac',
-        '-b:a', '64k',
-        '-progress', 'pipe:1',  # إخراج التقدم
-        '-y',
+        '-b:a', '64k',                  # صوت منخفض
+        '-progress', 'pipe:1',          # شريط التقدم
+        '-y',                           # نعم للكتابة فوق
         output_file
     ]
     
@@ -254,10 +252,10 @@ def compress_video_240p(input_file, output_file, crf=30):
         total_time = time.time() - start_time
         reduction = ((original_size - new_size) / original_size) * 100
         
-        print(f"[✓] تم الضغط بنجاح خلال {total_time:.1f}ث")
-        print(f"    📊 الحجم الأصلي: {original_size:.1f}MB")
-        print(f"    📊 الحجم الجديد: {new_size:.1f}MB")
-        print(f"    💾 توفير: {reduction:.1f}%")
+        print(f"[+] تم الضغط خلال {total_time:.1f}ث")
+        print(f"[+] الحجم الأصلي: {original_size:.1f}MB")
+        print(f"[+] الحجم الجديد: {new_size:.1f}MB")
+        print(f"[+] نسبة التخفيض: {reduction:.1f}%")
         return True
     else:
         print(f"[!] فشل الضغط")
@@ -266,7 +264,7 @@ def compress_video_240p(input_file, output_file, crf=30):
 # ===== UPLOAD TO TELEGRAM =====
 
 async def upload_video_to_channel(file_path, caption):
-    """رفع الفيديو إلى القناة مع صورة مصغرة"""
+    """رفع الفيديو إلى القناة"""
     try:
         if not app or not os.path.exists(file_path):
             return False
@@ -274,11 +272,8 @@ async def upload_video_to_channel(file_path, caption):
         filename = os.path.basename(file_path)
         file_size = os.path.getsize(file_path) / (1024*1024)
         
-        print(f"\n[*] جاري رفع: {filename}")
+        print(f"[*] جاري رفع: {filename}")
         print(f"[*] الحجم: {file_size:.1f}MB")
-        
-        # إضافة تأخير بسيط قبل الرفع
-        await asyncio.sleep(1)
         
         start_time = time.time()
         last_update = 0
@@ -302,24 +297,23 @@ async def upload_video_to_channel(file_path, caption):
                     print(f'\r[*] رفع: {percentage:.1f}% |{bar}| {current/1024/1024:.1f}MB/{total/1024/1024:.1f}MB ({speed:.0f}KB/s)', end='')
                     last_update = percentage
         
-        # رفع الفيديو
+        # رفع الفيديو بدون أي إضافات
         try:
             await app.send_video(
                 chat_id=TELEGRAM_CHANNEL,
                 video=file_path,
                 caption=caption,
                 supports_streaming=True,
-                # parse_mode=enums.ParseMode.HTML,  # إزالة هذا السطر إذا كان يسبب مشكلة
                 disable_notification=False,
                 progress=progress_callback
             )
             
             elapsed = time.time() - start_time
-            print(f"\n[✓] تم الرفع بنجاح خلال {elapsed:.1f}ثانية!")
+            print(f"\n[+] تم الرفع خلال {elapsed:.1f}ثانية")
             return True
             
         except FloodWait as e:
-            print(f"\n[!] انتظر {e.value} ثانية (طلب من Telegram)...")
+            print(f"\n[*] انتظر {e.value} ثانية...")
             await asyncio.sleep(e.value)
             return await upload_video_to_channel(file_path, caption)
             
@@ -336,7 +330,7 @@ async def upload_video_to_channel(file_path, caption):
                     supports_streaming=True,
                     disable_notification=False
                 )
-                print("[✓] تم الرفع بنجاح!")
+                print("[+] تم الرفع")
                 return True
             except Exception as e2:
                 print(f"[!] فشل الرفع مرة أخرى: {e2}")
@@ -399,9 +393,9 @@ def extract_video_url(episode_num, series_name, season_num):
 
 async def process_episode(episode_num, series_name, series_name_arabic, season_num, download_dir):
     """معالجة حلقة واحدة"""
-    print(f"\n{'='*60}")
-    print(f"🎬 الحلقة {episode_num:02d}")
-    print('='*60)
+    print(f"\n{'-'*50}")
+    print(f"الحلقة {episode_num:02d}")
+    print('-'*50)
     
     temp_file = os.path.join(download_dir, f"temp_{episode_num:02d}.mp4")
     final_file = os.path.join(download_dir, f"{series_name_arabic}_S{season_num:02d}_E{episode_num:02d}.mp4")
@@ -419,22 +413,22 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
         if not video_url:
             return False, message
         
-        print(f"[✓] {message}")
+        print(f"[+] {message}")
         
         # 2. تنزيل الفيديو
         print("[*] بدء تنزيل الفيديو...")
         if not download_video(video_url, temp_file):
             return False, "فشل تنزيل الفيديو"
         
-        # 3. ضغط الفيديو
-        print("\n[*] بدء ضغط الفيديو...")
+        # 3. ضغط الفيديو إلى 240p
+        print("\n[*] بدء ضغط الفيديو إلى 240p...")
         if not compress_video_240p(temp_file, final_file, crf=28):
             # إذا فشل الضغط، استخدم الملف الأصلي
             print("[!] فشل الضغط، استخدام الملف الأصلي")
             shutil.copy2(temp_file, final_file)
         
-        # 4. رفع الفيديو
-        caption = f"📺 {series_name_arabic}\nالموسم {season_num} | الحلقة {episode_num}\n\n🚀 تم الرفع تلقائياً"
+        # 4. رفع الفيديو - تعليق بسيط بدون رموز
+        caption = f"{series_name_arabic} الموسم {season_num} الحلقة {episode_num}"
         
         if await upload_video_to_channel(final_file, caption):
             return True, "تم الرفع بنجاح"
@@ -456,9 +450,9 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
 
 async def main():
     """الدالة الرئيسية"""
-    print("="*70)
-    print("📥 Telegram Video Downloader & Uploader")
-    print("="*70)
+    print("="*50)
+    print("Telegram Video Downloader & Uploader - 240p")
+    print("="*50)
     
     # التحقق من التبعيات
     print("\n[*] التحقق من التبعيات...")
@@ -466,25 +460,25 @@ async def main():
     # FFmpeg
     try:
         subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        print("  ✓ ffmpeg")
+        print("  [+] ffmpeg")
     except:
-        print("  ✗ ffmpeg غير مثبت")
+        print("  [!] ffmpeg غير مثبت")
         print("  [*] جاري التثبيت...")
         try:
             subprocess.run(['apt-get', 'install', '-y', 'ffmpeg'], capture_output=True)
-            print("  ✓ تم التثبيت")
+            print("  [+] تم التثبيت")
         except:
-            print("  ✗ فشل التثبيت، يرجى تثبيته يدوياً")
+            print("  [!] فشل التثبيت، يرجى تثبيته يدوياً")
             return
     
     # yt-dlp
     try:
         import yt_dlp
-        print("  ✓ yt-dlp")
+        print("  [+] yt-dlp")
     except:
-        print("  ✗ تثبيت yt-dlp...")
+        print("  [*] تثبيت yt-dlp...")
         subprocess.run([sys.executable, '-m', 'pip', 'install', 'yt-dlp', '-q'], check=True)
-        print("  ✓ تم التثبيت")
+        print("  [+] تم التثبيت")
     
     # إعداد Telegram
     if not await setup_telegram():
@@ -493,7 +487,7 @@ async def main():
     
     # إدخال المعلومات
     print("\n" + "="*50)
-    print("📝 معلومات المسلسل")
+    print("معلومات المسلسل")
     print("="*50)
     
     series_name = input("\nاسم المسلسل بالإنجليزية: ").strip() or "the-protector"
@@ -515,13 +509,13 @@ async def main():
     download_dir = f"{series_name_arabic}_الموسم_{season_num}"
     os.makedirs(download_dir, exist_ok=True)
     
-    print(f"\n{'='*70}")
-    print("🚀 بدء العمل")
-    print('='*70)
-    print(f"📺 المسلسل: {series_name_arabic}")
-    print(f"🎬 الموسم: {season_num}")
-    print(f"🔢 الحلقات: {start_ep} إلى {end_ep}")
-    print(f"📁 المجلد: {download_dir}")
+    print(f"\n{'='*50}")
+    print("بدء العمل")
+    print('='*50)
+    print(f"المسلسل: {series_name_arabic}")
+    print(f"الموسم: {season_num}")
+    print(f"الحلقات: {start_ep} إلى {end_ep}")
+    print(f"المجلد: {download_dir}")
     
     # معالجة الحلقات
     successful = 0
@@ -531,7 +525,7 @@ async def main():
     for episode_num in range(start_ep, end_ep + 1):
         current = episode_num - start_ep + 1
         
-        print(f"\n📋 الحلقة {episode_num:02d} ({current}/{total})")
+        print(f"\n[{current}/{total}] الحلقة {episode_num:02d}")
         print("-" * 40)
         
         start_time = time.time()
@@ -543,29 +537,29 @@ async def main():
         
         if success:
             successful += 1
-            print(f"[✅] {episode_num:02d}: {message} ({elapsed/60:.1f} دقيقة)")
+            print(f"[+] {episode_num:02d}: {message} ({elapsed/60:.1f} دقيقة)")
         else:
             failed.append(episode_num)
-            print(f"[❌] {episode_num:02d}: {message}")
+            print(f"[!] {episode_num:02d}: {message}")
         
         # انتظار بين الحلقات
         if episode_num < end_ep:
             wait = 3
-            print(f"[⏳] انتظار {wait} ثواني...")
+            print(f"[*] انتظار {wait} ثواني...")
             await asyncio.sleep(wait)
     
     # النتائج
-    print(f"\n{'='*70}")
-    print("📊 النتائج النهائية")
-    print('='*70)
-    print(f"✅ الناجحة: {successful}/{total}")
-    print(f"📁 الملفات في: {download_dir}")
+    print(f"\n{'='*50}")
+    print("النتائج النهائية")
+    print('='*50)
+    print(f"[+] الناجحة: {successful}/{total}")
+    print(f"[+] الملفات في: {download_dir}")
     
     if failed:
-        print(f"❌ الفاشلة: {failed}")
+        print(f"[!] الفاشلة: {failed}")
     
-    print(f"\n{'='*70}")
-    print("🎉 انتهى العمل!")
+    print(f"\n{'='*50}")
+    print("انتهى العمل")
     
     # إغلاق التطبيق
     if app:
@@ -575,6 +569,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\n[!] توقف بواسطة المستخدم")
+        print("\n\n[*] توقف بواسطة المستخدم")
     except Exception as e:
         print(f"\n[!] خطأ: {e}")
