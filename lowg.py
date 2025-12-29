@@ -12,6 +12,7 @@ import requests
 import subprocess
 import shutil
 import asyncio
+import math
 
 # ===== إضافة Pyrogram بعد التثبيت =====
 try:
@@ -147,6 +148,32 @@ def download_video(url, output_path):
         print(f"[!] خطأ في التنزيل: {e}")
         return False
 
+# ===== GET VIDEO DIMENSIONS =====
+
+def get_video_dimensions(input_file):
+    """الحصول على أبعاد الفيديو"""
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'csv=p=0',
+            input_file
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            dimensions = result.stdout.strip().split(',')
+            if len(dimensions) == 2:
+                width = int(dimensions[0])
+                height = int(dimensions[1])
+                return width, height
+    except:
+        pass
+    
+    return 426, 240  # القيم الافتراضية لـ 240p
+
 # ===== COMPRESSION TO 240P - SIMPLE =====
 
 def compress_video_240p_simple(input_file, output_file, crf=28):
@@ -264,19 +291,30 @@ def compress_video_240p_simple(input_file, output_file, crf=28):
         print(f"[!] فشل الضغط (رمز الخروج: {process.returncode})")
         return False
 
-# ===== CREATE THUMBNAIL =====
+# ===== CREATE THUMBNAIL 16:9 =====
 
-def create_thumbnail(input_file, thumbnail_path):
-    """إنشاء صورة مصغرة للفيديو"""
+def create_thumbnail_16_9(input_file, thumbnail_path):
+    """إنشاء صورة مصغرة للفيديو بنسبة 16:9"""
     try:
-        print(f"[*] جاري إنشاء الصورة المصغرة...")
+        print(f"[*] جاري إنشاء الصورة المصغرة 16:9...")
         
+        # الحصول على أبعاد الفيديو
+        width, height = get_video_dimensions(input_file)
+        
+        # حساب أبعاد 16:9
+        target_width = 320  # عرض ثابت للصورة المصغرة
+        target_height = int(target_width * 9 / 16)  # 180
+        
+        # استخدام ffmpeg لاستخراج الإطار
         cmd = [
             'ffmpeg',
             '-i', input_file,
-            '-ss', '00:00:05',      # أخذ إطار عند الثانية الخامسة
-            '-vframes', '1',        # إطار واحد فقط
-            '-s', '320x240',        # حجم الصورة
+            '-ss', '00:00:10',           # أخذ إطار عند الثانية العاشرة (أفضل من الثانية الخامسة)
+            '-vframes', '1',
+            '-s', f'{target_width}x{target_height}',
+            '-vf', 'scale=w={}:h={}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2'.format(
+                target_width, target_height, target_width, target_height
+            ),
             '-f', 'image2',
             '-y',
             thumbnail_path
@@ -286,7 +324,23 @@ def create_thumbnail(input_file, thumbnail_path):
         
         if result.returncode == 0 and os.path.exists(thumbnail_path):
             size = os.path.getsize(thumbnail_path) / 1024  # KB
-            print(f"[+] تم إنشاء الصورة المصغرة ({size:.1f}KB)")
+            
+            # تحسين جودة الصورة إذا كانت كبيرة جداً
+            if size > 150:  # إذا كانت الصورة أكبر من 150KB
+                print(f"[*] تحسين حجم الصورة المصغرة ({size:.1f}KB)...")
+                optimize_cmd = [
+                    'ffmpeg',
+                    '-i', thumbnail_path,
+                    '-q:v', '2',  # جودة أقل قليلاً
+                    '-y',
+                    thumbnail_path + '.tmp'
+                ]
+                subprocess.run(optimize_cmd, capture_output=True, text=True)
+                if os.path.exists(thumbnail_path + '.tmp'):
+                    shutil.move(thumbnail_path + '.tmp', thumbnail_path)
+            
+            size = os.path.getsize(thumbnail_path) / 1024
+            print(f"[+] تم إنشاء الصورة المصغرة 16:9 ({target_width}x{target_height}, {size:.1f}KB)")
             return True
         else:
             print(f"[!] فشل إنشاء الصورة المصغرة")
@@ -296,10 +350,31 @@ def create_thumbnail(input_file, thumbnail_path):
         print(f"[!] خطأ في إنشاء الصورة المصغرة: {e}")
         return False
 
-# ===== UPLOAD TO TELEGRAM =====
+# ===== GET VIDEO DURATION =====
+
+def get_video_duration(input_file):
+    """الحصول على مدة الفيديو بالثواني"""
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            input_file
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return int(float(result.stdout.strip()))
+    except:
+        pass
+    
+    return 0
+
+# ===== UPLOAD TO TELEGRAM WITH STREAMING SUPPORT =====
 
 async def upload_video_to_channel(file_path, caption, thumbnail_path=None):
-    """رفع الفيديو إلى القناة مع صورة مصغرة اختيارية"""
+    """رفع الفيديو إلى القناة مع دعم التشغيل المتقطع"""
     try:
         if not app or not os.path.exists(file_path):
             return False
@@ -309,6 +384,12 @@ async def upload_video_to_channel(file_path, caption, thumbnail_path=None):
         
         print(f"[*] جاري رفع: {filename}")
         print(f"[*] الحجم: {file_size:.1f}MB")
+        
+        # الحصول على أبعاد الفيديو
+        width, height = get_video_dimensions(file_path)
+        
+        # الحصول على مدة الفيديو
+        duration = get_video_duration(file_path)
         
         start_time = time.time()
         last_update = 0
@@ -332,13 +413,16 @@ async def upload_video_to_channel(file_path, caption, thumbnail_path=None):
                     print(f'\r[*] رفع: {percentage:.1f}% |{bar}| {current/1024/1024:.1f}MB/{total/1024/1024:.1f}MB ({speed:.0f}KB/s)', end='')
                     last_update = percentage
         
-        # إعدادات الرفع
+        # إعدادات الرفع مع دعم التشغيل المتقطع
         upload_params = {
             'chat_id': TELEGRAM_CHANNEL,
             'video': file_path,
             'caption': caption,
-            'supports_streaming': True,
+            'supports_streaming': True,  # هذا ما يجعل الفيديو يعمل عند الضغط ويتوقف عند الخروج
             'disable_notification': False,
+            'width': width,
+            'height': height,
+            'duration': duration,
             'progress': progress_callback
         }
         
@@ -352,6 +436,7 @@ async def upload_video_to_channel(file_path, caption, thumbnail_path=None):
             
             elapsed = time.time() - start_time
             print(f"\n[+] تم الرفع خلال {elapsed:.1f}ثانية")
+            print(f"[+] الفيديو يدعم التشغيل المتقطع (يتوقف عند الخروج)")
             return True
             
         except FloodWait as e:
@@ -362,12 +447,13 @@ async def upload_video_to_channel(file_path, caption, thumbnail_path=None):
         except Exception as e:
             print(f"\n[!] خطأ في الرفع: {e}")
             
-            # محاولة بدون progress callback
+            # محاولة بدون progress callback ولكن مع نفس الإعدادات
             try:
                 print("[*] جاري محاولة رفع بدون تتبع التقدم...")
                 upload_params.pop('progress', None)
                 await app.send_video(**upload_params)
                 print("[+] تم الرفع")
+                print("[+] الفيديو يدعم التشغيل المتقطع (يتوقف عند الخروج)")
                 return True
             except Exception as e2:
                 print(f"[!] فشل الرفع مرة أخرى: {e2}")
@@ -458,9 +544,9 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
         if not download_video(video_url, temp_file):
             return False, "فشل تنزيل الفيديو"
         
-        # 3. إنشاء صورة مصغرة من الفيديو الأصلي
-        print("[*] إنشاء صورة مصغرة...")
-        create_thumbnail(temp_file, thumbnail_file)
+        # 3. إنشاء صورة مصغرة 16:9 من الفيديو الأصلي
+        print("[*] إنشاء صورة مصغرة 16:9...")
+        create_thumbnail_16_9(temp_file, thumbnail_file)
         
         # 4. ضغط الفيديو إلى 240p
         print("\n[*] بدء ضغط الفيديو إلى 240p...")
@@ -476,7 +562,7 @@ async def process_episode(episode_num, series_name, series_name_arabic, season_n
         thumb_to_use = thumbnail_file if os.path.exists(thumbnail_file) else None
         
         if await upload_video_to_channel(final_file, caption, thumb_to_use):
-            return True, "تم الرفع بنجاح"
+            return True, "تم الرفع بنجاح مع دعم التشغيل المتقطع"
         else:
             return True, "تم التنزيل فقط (فشل الرفع)"
         
@@ -566,6 +652,7 @@ async def main():
     print(f"الموسم: {season_num}")
     print(f"الحلقات: {start_ep} إلى {end_ep}")
     print(f"المجلد: {download_dir}")
+    print("[*] سيتم رفع الفيديوهات مع دعم التشغيل المتقطع (يتوقف عند الخروج)")
     
     # معالجة الحلقات
     successful = 0
@@ -603,6 +690,7 @@ async def main():
     print("النتائج النهائية")
     print('='*50)
     print(f"[+] الناجحة: {successful}/{total}")
+    print(f"[+] جميع الفيديوهات تدعم التشغيل المتقطع (تتوقف عند الخروج)")
     print(f"[+] الملفات في: {download_dir}")
     
     if failed:
